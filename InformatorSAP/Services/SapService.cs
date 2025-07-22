@@ -239,7 +239,7 @@ namespace InformatorSAP.Services
                         QuantityRequired = quantity / 1000m,
                         Unit = unit,
                         StorageLocation = lgort,
-                        AvailableQuantity = availableQuantity
+                        AvailableQuantity = availableQuantity / 1000m
                     });
                 }
                 catch (Exception ex)
