@@ -3,7 +3,7 @@
 <Project>
   <PropertyGroup>
     <_PublishTargetUrl>C:\publish\InformatorSAP</_PublishTargetUrl>
-    <History>True|2025-07-07T11:26:48.5491992Z||;True|2025-07-07T13:26:28.6399061+02:00||;True|2025-07-07T11:01:06.7571771+02:00||;</History>
+    <History>True|2025-09-02T06:29:41.9514127Z||;True|2025-07-22T13:32:08.0649480+02:00||;True|2025-07-22T13:31:28.6530619+02:00||;True|2025-07-22T12:25:57.6962684+02:00||;True|2025-07-07T13:26:48.5491992+02:00||;True|2025-07-07T13:26:28.6399061+02:00||;True|2025-07-07T11:01:06.7571771+02:00||;</History>
     <LastFailureDetails />
   </PropertyGroup>
   <ItemGroup>
@@ -14,10 +14,10 @@
       <publishTime>02/22/2013 09:43:40</publishTime>
     </File>
     <File Include="bin/InformatorSAP.dll">
-      <publishTime>07/07/2025 11:01:04</publishTime>
+      <publishTime>09/02/2025 08:29:40</publishTime>
     </File>
     <File Include="bin/InformatorSAP.pdb">
-      <publishTime>07/07/2025 11:01:04</publishTime>
+      <publishTime>09/02/2025 08:29:40</publishTime>
     </File>
     <File Include="bin/Microsoft.CodeDom.Providers.DotNetCompilerPlatform.dll">
       <publishTime>09/05/2018 16:10:50</publishTime>
@@ -227,7 +227,7 @@
       <publishTime>10/20/2023 22:34:08</publishTime>
     </File>
     <File Include="bin/System.Web.Mvc.dll">
-      <publishTime>10/20/2023 22:34:00</publishTime>
+      <publishTime>01/01/0001 00:00:00</publishTime>
     </File>
     <File Include="bin/System.Web.Optimization.dll">
       <publishTime>02/11/2014 16:26:04</publishTime>

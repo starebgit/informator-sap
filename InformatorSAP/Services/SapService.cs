@@ -135,35 +135,61 @@ namespace InformatorSAP.Services
 
             return filtered;
         }
-        public (string Quantity, string Unit) GetTotalOrderQuantityWithUnit(string orderNumber)
+        // CHANGE SIGNATURE (add Delivered + DeliveredUnit, keep strings for minimal controller churn)
+        public (string Quantity, string Unit, string Delivered, string DeliveredUnit)
+            GetTotalOrderQuantityWithUnit(string orderNumber)
         {
             var dest = RfcDestinationManager.GetDestination("INFORMATOR_SAP");
             var repo = dest.Repository;
+            string aufnr = orderNumber.PadLeft(12, '0');
 
-            var readTable = repo.CreateFunction("RFC_READ_TABLE");
-            readTable.SetValue("QUERY_TABLE", "AFKO");
-            readTable.SetValue("DELIMITER", "|");
-            readTable.SetValue("ROWCOUNT", 1);
+            // --- AFKO: total order quantity + unit ---
+            var fAfko = repo.CreateFunction("RFC_READ_TABLE");
+            fAfko.SetValue("QUERY_TABLE", "AFKO");
+            fAfko.SetValue("DELIMITER", "|");
+            fAfko.SetValue("ROWCOUNT", 1);
 
-            var fields = readTable.GetTable("FIELDS");
-            fields.Append(); fields.SetValue("FIELDNAME", "GAMNG");
-            fields.Append(); fields.SetValue("FIELDNAME", "GMEIN");
+            var fldsAfko = fAfko.GetTable("FIELDS");
+            fldsAfko.Append(); fldsAfko.SetValue("FIELDNAME", "GAMNG");
+            fldsAfko.Append(); fldsAfko.SetValue("FIELDNAME", "GMEIN");
 
-            var options = readTable.GetTable("OPTIONS");
-            options.Append(); options.SetValue("TEXT", $"AUFNR = '{orderNumber.PadLeft(12, '0')}'");
+            var optAfko = fAfko.GetTable("OPTIONS");
+            optAfko.Append(); optAfko.SetValue("TEXT", $"AUFNR = '{aufnr}'");
 
-            readTable.Invoke(dest);
+            fAfko.Invoke(dest);
 
-            var data = readTable.GetTable("DATA");
-            if (data.Count == 0) return (null, null);
+            var dAfko = fAfko.GetTable("DATA");
+            if (dAfko.Count == 0) return (null, null, null, null);
 
-            var line = data[0].GetString("WA");
-            var parts = line.Split('|');
+            var afkoLine = dAfko[0].GetString("WA").Split('|');
+            var qtyStr = afkoLine.Length > 0 ? afkoLine[0].Trim() : null;
+            var unitStr = afkoLine.Length > 1 ? afkoLine[1].Trim() : null;
 
-            var quantity = parts.Length > 0 ? parts[0].Trim() : null;
-            var unit = parts.Length > 1 ? parts[1].Trim() : null;
+            // --- AFPO: delivered (goods receipt) quantity + unit ---
+            var fAfpo = repo.CreateFunction("RFC_READ_TABLE");
+            fAfpo.SetValue("QUERY_TABLE", "AFPO");
+            fAfpo.SetValue("DELIMITER", "|");
+            fAfpo.SetValue("ROWCOUNT", 1);
 
-            return (quantity, unit);
+            var fldsAfpo = fAfpo.GetTable("FIELDS");
+            fldsAfpo.Append(); fldsAfpo.SetValue("FIELDNAME", "WEMNG"); // delivered qty
+            fldsAfpo.Append(); fldsAfpo.SetValue("FIELDNAME", "MEINS"); // unit
+
+            var optAfpo = fAfpo.GetTable("OPTIONS");
+            optAfpo.Append(); optAfpo.SetValue("TEXT", $"AUFNR = '{aufnr}'");
+
+            fAfpo.Invoke(dest);
+
+            var dAfpo = fAfpo.GetTable("DATA");
+            string deliveredStr = null, deliveredUnitStr = null;
+            if (dAfpo.Count > 0)
+            {
+                var afpoLine = dAfpo[0].GetString("WA").Split('|');
+                deliveredStr = afpoLine.Length > 0 ? afpoLine[0].Trim() : null;
+                deliveredUnitStr = afpoLine.Length > 1 ? afpoLine[1].Trim() : null;
+            }
+
+            return (qtyStr, unitStr, deliveredStr, deliveredUnitStr);
         }
 
         public List<ComponentDto> GetOrderComponents(string orderNumber)
@@ -252,5 +278,87 @@ namespace InformatorSAP.Services
             return results;
         }
         // TODO: Consider optimizing stock lookup with batch RFC_READ_TABLE if performance becomes an issue
+
+        public List<OperationSummaryDto> GetOrderOperationsSummary(string orderNumber)
+        {
+            var dest = RfcDestinationManager.GetDestination("INFORMATOR_SAP");
+            var repo = dest.Repository;
+            string aufnr = orderNumber.PadLeft(12, '0');
+
+            // AFKO → AUFPL + order quantity (used as "Količina postopka" per operation)
+            var fAfko = repo.CreateFunction("RFC_READ_TABLE");
+            fAfko.SetValue("QUERY_TABLE", "AFKO");
+            fAfko.SetValue("DELIMITER", "|");
+            var fldsAfko = fAfko.GetTable("FIELDS");
+            fldsAfko.Append(); fldsAfko.SetValue("FIELDNAME", "AUFPL");
+            fldsAfko.Append(); fldsAfko.SetValue("FIELDNAME", "GAMNG"); // total order qty
+            var optAfko = fAfko.GetTable("OPTIONS");
+            optAfko.Append(); optAfko.SetValue("TEXT", $"AUFNR = '{aufnr}'");
+            fAfko.Invoke(dest);
+
+            var dataAfko = fAfko.GetTable("DATA");
+            if (dataAfko.Count == 0) return new List<OperationSummaryDto>();
+
+            var afkoParts = dataAfko[0].GetString("WA").Split('|');
+            string aufpl = afkoParts[0].Trim();
+
+            decimal orderQty = 0m; // this is what COOIS shows as "Klč. postopka"
+            if (afkoParts.Length > 1 && decimal.TryParse(afkoParts[1].Trim(), out var qRaw))
+                orderQty = qRaw / 1000m; // QUAN(3) → 12.000 is sent as 000000000012000
+
+            // AFVC → operations list
+            var fAfvc = repo.CreateFunction("RFC_READ_TABLE");
+            fAfvc.SetValue("QUERY_TABLE", "AFVC");
+            fAfvc.SetValue("DELIMITER", "|");
+            var fldsAfvc = fAfvc.GetTable("FIELDS");
+            foreach (var fn in new[] { "AUFPL", "APLZL", "VORNR" })
+            {
+                fldsAfvc.Append(); fldsAfvc.SetValue("FIELDNAME", fn);
+            }
+            var optAfvc = fAfvc.GetTable("OPTIONS");
+            optAfvc.Append(); optAfvc.SetValue("TEXT", $"AUFPL = '{aufpl}'");
+            fAfvc.Invoke(dest);
+
+            var results = new List<OperationSummaryDto>();
+
+            foreach (IRfcStructure r in fAfvc.GetTable("DATA"))
+            {
+                var parts = r.GetString("WA").Split('|');
+                if (parts.Length < 3) continue;
+
+                string vornr = parts[2].Trim();
+
+                // AFRU → sum confirmed yield (LMNGA) for this operation
+                decimal sumYield = 0m;
+                var fAfru = repo.CreateFunction("RFC_READ_TABLE");
+                fAfru.SetValue("QUERY_TABLE", "AFRU");
+                fAfru.SetValue("DELIMITER", "|");
+                var fldsAfru = fAfru.GetTable("FIELDS");
+                fldsAfru.Append(); fldsAfru.SetValue("FIELDNAME", "LMNGA");
+                var optAfru = fAfru.GetTable("OPTIONS");
+                optAfru.Append(); optAfru.SetValue("TEXT", $"AUFNR = '{aufnr}'");
+                optAfru.Append(); optAfru.SetValue("TEXT", $"AND VORNR = '{vornr}'");
+                fAfru.Invoke(dest);
+
+                foreach (IRfcStructure y in fAfru.GetTable("DATA"))
+                {
+                    var p = y.GetString("WA").Split('|');
+                    if (p.Length > 0 && decimal.TryParse(p[0].Trim(), out var yv)) sumYield += yv;
+                }
+
+                results.Add(new OperationSummaryDto
+                {
+                    Operation = vornr,
+                    OperationAmount = orderQty,          // ← "Količina postopka" (same 12 for each op)
+                    ConfirmedYield = sumYield / 1000m   // ← "Potrjen donos"
+                                                        // BaseQuantity / ConfirmedScrap removed
+                });
+            }
+
+            return results
+                .OrderBy(o => int.TryParse(o.Operation, out var n) ? n : int.MaxValue)
+                .ThenBy(o => o.Operation)
+                .ToList();
+        }
     }
 }

@@ -15,20 +15,29 @@ namespace InformatorSAP.Controllers
                 return BadRequest("Missing orderNumber parameter.");
 
             var service = new SapService();
-            var (quantityStr, unit) = service.GetTotalOrderQuantityWithUnit(orderNumber);
+            var (quantityStr, unit, deliveredStr, deliveredUnit) =
+                service.GetTotalOrderQuantityWithUnit(orderNumber);
 
-            if (quantityStr == null)
-                return NotFound();
+            if (quantityStr == null) return NotFound();
 
-            if (!decimal.TryParse(quantityStr, out var quantity))
+            if (!decimal.TryParse(quantityStr, out var qtyRaw))
                 return InternalServerError(new Exception("Could not parse quantity to number."));
 
-            quantity = quantity / 1000;
+            // parse delivered if present; default to 0
+            decimal deliveredRaw = 0m;
+            if (!string.IsNullOrWhiteSpace(deliveredStr))
+                decimal.TryParse(deliveredStr, out deliveredRaw);
+
+            // SAP QUAN fields are scaled by 1000
+            var quantity = qtyRaw / 1000m;
+            var delivered = deliveredRaw / 1000m;
 
             return Ok(new
             {
                 Quantity = quantity,
-                Unit = unit
+                Unit = unit,
+                Delivered = delivered,
+                DeliveredUnit = string.IsNullOrWhiteSpace(deliveredUnit) ? unit : deliveredUnit
             });
         }
 
@@ -46,6 +55,18 @@ namespace InformatorSAP.Controllers
                 return NotFound();
 
             return Ok(components);
+        }
+
+        [HttpGet]
+        [Route("operations")]
+        public IHttpActionResult GetOperations([FromUri] string orderNumber)
+        {
+            if (string.IsNullOrWhiteSpace(orderNumber))
+                return BadRequest("Missing orderNumber parameter.");
+
+            var service = new SapService();
+            var list = service.GetOrderOperationsSummary(orderNumber);
+            return Ok(list); // empty list = no ops found
         }
 
     }

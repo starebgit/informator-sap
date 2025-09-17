@@ -18,7 +18,7 @@ namespace InformatorSAP
             // Web API configuration and services
 
             // Web API routes
-            var cors = new EnableCorsAttribute("http://localhost:3000", "*", "*");
+            var cors = new EnableCorsAttribute("*", "*", "*");
             config.EnableCors(cors);
 
             // Existing routing code
