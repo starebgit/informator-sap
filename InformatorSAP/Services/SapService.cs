@@ -360,5 +360,142 @@ namespace InformatorSAP.Services
                 .ThenBy(o => o.Operation)
                 .ToList();
         }
+        public List<MaterialInfoDto> GetMaterialsInfoBulk(IEnumerable<string> codes, string language = "SL", string plant = "1061")
+        {
+            var result = new List<MaterialInfoDto>();
+            if (codes == null) return result;
+
+            // Map language -> SPRAS
+            string spras = "E";
+            if (!string.IsNullOrEmpty(language))
+            {
+                var up = language.ToUpperInvariant();
+                if (up == "SL") spras = "5";
+                else if (up == "EN") spras = "E";
+                else spras = up;
+            }
+
+            var dest = RfcDestinationManager.GetDestination("INFORMATOR_SAP");
+            var repo = dest.Repository;
+
+            foreach (var raw in codes)
+            {
+                if (string.IsNullOrWhiteSpace(raw)) continue;
+
+                var info = new MaterialInfoDto { Code = raw, Name = null, OrderNumber = null };
+
+                try
+                {
+                    var code18 = raw.Trim().PadLeft(18, '0'); // MATNR is 18
+
+                    // --- MAKT: name (same logic you had before; single WHERE line with AND) ---
+                    try
+                    {
+                        string name = null;
+
+                        var f = repo.CreateFunction("RFC_READ_TABLE");
+                        f.SetValue("QUERY_TABLE", "MAKT");
+                        f.SetValue("DELIMITER", "|");
+                        f.SetValue("ROWCOUNT", 1);
+
+                        var fields = f.GetTable("FIELDS");
+                        fields.Append(); fields.SetValue("FIELDNAME", "MAKTX");
+
+                        var opts = f.GetTable("OPTIONS");
+                        // single syntactically-valid WHERE line
+                        opts.Append(); opts.SetValue("TEXT", $"MATNR = '{code18}' AND SPRAS = '{spras}'");
+
+                        f.Invoke(dest);
+                        var data = f.GetTable("DATA");
+                        if (data != null && data.Count > 0)
+                        {
+                            var parts = data[0].GetString("WA").Split('|');
+                            if (parts.Length > 0) name = parts[0].Trim();
+                        }
+
+                        // fallback to English
+                        if (string.IsNullOrEmpty(name) && spras != "E")
+                        {
+                            var fEn = repo.CreateFunction("RFC_READ_TABLE");
+                            fEn.SetValue("QUERY_TABLE", "MAKT");
+                            fEn.SetValue("DELIMITER", "|");
+                            fEn.SetValue("ROWCOUNT", 1);
+                            var fieldsEn = fEn.GetTable("FIELDS");
+                            fieldsEn.Append(); fieldsEn.SetValue("FIELDNAME", "MAKTX");
+                            var optsEn = fEn.GetTable("OPTIONS");
+                            optsEn.Append(); optsEn.SetValue("TEXT", $"MATNR = '{code18}' AND SPRAS = 'E'");
+                            fEn.Invoke(dest);
+                            var dataEn = fEn.GetTable("DATA");
+                            if (dataEn != null && dataEn.Count > 0)
+                            {
+                                var parts = dataEn[0].GetString("WA").Split('|');
+                                if (parts.Length > 0) name = parts[0].Trim();
+                            }
+                        }
+
+                        info.Name = name;
+                    }
+                    catch { /* keep going even if MAKT fails */ }
+
+                    // --- COOIS-like: MATNR + WERKS directly on AFPO (single WHERE line) ---
+                    info.OrderNumber = GetOrderForMaterialPlant(dest, code18, plant, 10); // small, but enough
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine("[GetMaterialsInfoBulk] error for " + raw + ": " + ex.Message);
+                    System.Diagnostics.Trace.WriteLine("[GetMaterialsInfoBulk] error for " + raw + ": " + ex.Message);
+                }
+
+                result.Add(info);
+            }
+
+            return result;
+        }
+
+        private static string GetOrderForMaterialPlant(RfcDestination dest, string code18, string plant, int rowCount = 100)
+        {
+            var repo = dest.Repository;
+
+            try
+            {
+                var f = repo.CreateFunction("RFC_READ_TABLE");
+                f.SetValue("QUERY_TABLE", "AFPO");
+                f.SetValue("DELIMITER", "|");
+                f.SetValue("ROWCOUNT", rowCount > 0 ? rowCount : 100); // keep more than 10 so we don't miss newer orders
+
+                // Only AUFNR is needed
+                var fields = f.GetTable("FIELDS");
+                fields.Append(); fields.SetValue("FIELDNAME", "AUFNR");
+
+                // Single valid WHERE line — this is the *only* path we use
+                var opts = f.GetTable("OPTIONS");
+                opts.Append(); opts.SetValue("TEXT", $"MATNR = '{code18}' AND DWERK = '{plant}'");
+
+                f.Invoke(dest);
+
+                var data = f.GetTable("DATA");
+                if (data == null || data.Count == 0) return null;
+
+                // Pick the lexicographically highest AUFNR (works for zero-padded 12-char numbers)
+                string best = null;
+                for (int i = 0; i < data.Count; i++)
+                {
+                    var wa = data[i].GetString("WA");
+                    if (string.IsNullOrWhiteSpace(wa)) continue;
+
+                    var aufnr = wa.Trim();
+                    if (string.IsNullOrEmpty(best) || string.CompareOrdinal(aufnr, best) > 0)
+                        best = aufnr;
+                }
+
+                return best;
+            }
+            catch
+            {
+                // Do not surface ABAP/NCO exceptions
+                return null;
+            }
+        }
+
     }
 }
