@@ -30,6 +30,4 @@ namespace InformatorSAP.Controllers
             return Ok(list);
         }
     }
-
-
 }

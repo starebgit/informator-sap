@@ -154,11 +154,16 @@
     <Compile Include="App_Start\RouteConfig.cs" />
     <Compile Include="App_Start\WebApiConfig.cs" />
     <Compile Include="Classes\ComponentDto.cs" />
+    <Compile Include="Classes\CooisOrderRowDto.cs" />
     <Compile Include="Classes\MaterialDto.cs" />
     <Compile Include="Classes\MaterialInfoDto.cs" />
+    <Compile Include="Classes\OpenOrderId.cs" />
     <Compile Include="Classes\OperationSummaryDto.cs" />
+    <Compile Include="Classes\OrderDto.cs" />
+    <Compile Include="Classes\WorkCenterDto.cs" />
     <Compile Include="Controllers\MaterialsController.cs" />
     <Compile Include="Controllers\OrdersController.cs" />
+    <Compile Include="Controllers\PlanController.cs" />
     <Compile Include="Controllers\TestController.cs" />
     <Compile Include="Global.asax.cs">
       <DependentUpon>Global.asax</DependentUpon>
