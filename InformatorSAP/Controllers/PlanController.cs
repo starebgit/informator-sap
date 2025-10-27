@@ -84,32 +84,31 @@ namespace InformatorSAP.Controllers
                 return InternalServerError(new Exception("Failed to fetch operation status: " + ex.Message));
             }
         }
-
-        // GET /api/plan/open-orders-by-material?material=000011330002010000&plant=1061&language=SL&take=500
+        // GET /api/plan/open-orders-by-material?material=...&plant=1061&language=SL&take=50&includeDisplayInfo=true
         [HttpGet]
         [Route("open-orders-by-material")]
         public IHttpActionResult GetOpenOrdersByMaterial(
             [FromUri] string material,
             [FromUri] string plant = "1061",
             [FromUri] string language = "SL",
-            [FromUri] int take = 50)
+            [FromUri] int take = 50,
+            [FromUri] bool includeDisplayInfo = false)   // ← NEW
         {
             try
             {
                 if (string.IsNullOrWhiteSpace(material))
                     return BadRequest("Missing required parameter: material");
 
-                // Normalize optional inputs a bit (optional)
                 plant = string.IsNullOrWhiteSpace(plant) ? "1061" : plant.Trim();
                 language = string.IsNullOrWhiteSpace(language) ? "SL" : language.Trim();
 
                 var service = new SapService();
-                List<OpenOrderId> orders = service.GetOpenOrdersForMaterial(material, plant, language, take);
+                List<OpenOrderId> orders =
+                    service.GetOpenOrdersForMaterial(material, plant, language, take, includeDisplayInfo); // ← pass flag
                 return Ok(orders ?? new List<OpenOrderId>());
             }
             catch (Exception ex)
             {
-                // Preserve original stack trace
                 return InternalServerError(ex);
             }
         }
