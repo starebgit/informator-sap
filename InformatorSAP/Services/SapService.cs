@@ -1246,5 +1246,116 @@ namespace InformatorSAP.Services
             }
             return list2;
         }
+
+        public List<OperationConfirmationDto> GetOperationConfirmations(string orderNumber)
+        {
+            var list = new List<OperationConfirmationDto>();
+            if (string.IsNullOrWhiteSpace(orderNumber)) return list;
+
+            var dest = RfcDestinationManager.GetDestination("INFORMATOR_SAP");
+            var repo = dest.Repository;
+            string aufnr = orderNumber.Trim().PadLeft(12, '0');
+
+            // helper
+            IRfcTable RT(string table, int rowCount, string[] fields, string where)
+            {
+                var f = repo.CreateFunction("RFC_READ_TABLE");
+                f.SetValue("QUERY_TABLE", table);
+                f.SetValue("DELIMITER", "|");
+                if (rowCount > 0) f.SetValue("ROWCOUNT", rowCount);
+
+                var tf = f.GetTable("FIELDS");
+                foreach (var fn in fields) { tf.Append(); tf.SetValue("FIELDNAME", fn); }
+
+                var opts = f.GetTable("OPTIONS");
+                if (!string.IsNullOrWhiteSpace(where))
+                {
+                    var line = where.StartsWith(" ") ? where : " " + where;
+                    for (int i = 0; i < line.Length; i += 72)
+                    {
+                        var part = line.Substring(i, Math.Min(72, line.Length - i));
+                        opts.Append(); opts.SetValue("TEXT", part);
+                    }
+                }
+                try { f.Invoke(dest); } catch { return null; }
+                return f.GetTable("DATA");
+            }
+
+            // 1) AFKO → AUFPL (to list operations in order)
+            var afko = RT("AFKO", 1, new[] { "AUFPL" }, $"AUFNR = '{aufnr}'");
+            if (afko == null || afko.RowCount == 0) return list;
+            var aufpl = afko[0].GetString("WA").Trim();
+
+            // 2) AFVC → all operations (VORNR) for this routing + preallocated RUECK
+            var afvc = RT("AFVC", 0, new[] { "VORNR", "RUECK", "RMZHL" }, $"AUFPL = '{aufpl}'");
+
+            var ops = new List<string>();
+            var preAlloc = new Dictionary<string, (string RUECK, int RMZHL)>(StringComparer.Ordinal);
+
+            if (afvc != null)
+            {
+                for (int i = 0; i < afvc.RowCount; i++)
+                {
+                    var p = afvc[i].GetString("WA").Split('|');
+                    if (p.Length == 0) continue;
+
+                    var v = p[0].Trim();                 // VORNR
+                    if (string.IsNullOrEmpty(v)) continue;
+                    ops.Add(v);
+
+                    var r0 = p.Length > 1 ? p[1].Trim() : null; // RUECK
+                    int rm0 = 0;
+                    if (p.Length > 2) int.TryParse(p[2].Trim(), out rm0); // RMZHL
+
+                    if (!string.IsNullOrEmpty(r0))
+                        preAlloc[v] = (r0, rm0);
+                }
+            }
+
+            // 3) AFRU → RUECK per operation (pick latest confirmation per VORNR)
+            //    COOIS shows the operation's confirmation number from AFRU.
+            //    Include STOKZ and ignore reversed confirmations (STOKZ = 'X')
+            var afru = RT("AFRU", 0, new[] { "VORNR", "RUECK", "RMZHL", "STOKZ" }, $"AUFNR = '{aufnr}'");
+            var lastByOp = new Dictionary<string, (string RUECK, int RMZHL)>(StringComparer.Ordinal);
+
+            if (afru != null)
+            {
+                for (int i = 0; i < afru.RowCount; i++)
+                {
+                    var p = afru[i].GetString("WA").Split('|');
+                    if (p.Length < 4) continue;
+
+                    var vornr = p[0].Trim();
+                    var rueck = p[1].Trim();
+                    int rmzhl = 0; int.TryParse(p[2].Trim(), out rmzhl);
+                    var stokz = p[3].Trim();
+
+                    // skip reversed confirmations
+                    if (stokz == "X") continue;
+
+                    if (string.IsNullOrEmpty(vornr) || string.IsNullOrEmpty(rueck)) continue;
+
+                    if (!lastByOp.TryGetValue(vornr, out var cur) || rmzhl > cur.RMZHL)
+                        lastByOp[vornr] = (rueck, rmzhl);
+                }
+            }
+
+            // 4) Compose results for all ops (fallback to AFVC preallocated RUECK if no AFRU yet)
+            foreach (var v in ops.OrderBy(x => int.TryParse(x, out var n) ? n : int.MaxValue).ThenBy(x => x))
+            {
+                lastByOp.TryGetValue(v, out var info);
+
+                if (string.IsNullOrEmpty(info.RUECK) && preAlloc.TryGetValue(v, out var pa))
+                    info = pa;
+
+                list.Add(new OperationConfirmationDto
+                {
+                    Operation = v,
+                    ConfirmationRaw = info.RUECK,
+                    ConfirmationDisplay = AlphaOut(info.RUECK)
+                });
+            }
+            return list;
+        }
     }
 }
