@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Configuration;
 using System.Globalization;
 using System.Linq;
+using System.Web.Http.Results;
 using InformatorSAP.Classes;
 using SAP.Middleware.Connector;
 
@@ -508,11 +509,20 @@ namespace InformatorSAP.Services
             string term = null,
             int rowCount = 100)
         {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            long _prev = 0;
+            void STEP(string name, string extra = null)
+            {
+                var now = sw.ElapsedMilliseconds;
+                System.Diagnostics.Trace.WriteLine($"[FindWorkCenters] {name}: +{now - _prev} ms (total {now} ms){(string.IsNullOrWhiteSpace(extra) ? "" : " | " + extra)}");
+                _prev = now;
+            }
+
             var dest = RfcDestinationManager.GetDestination("INFORMATOR_SAP");
             var repo = dest.Repository;
             string werks = (plant ?? "1061").Trim().Replace("'", "''");
 
-            // ---------- tiny RFC_READ_TABLE helper (handles 72-char OPTION split) ----------
+            // ---------- RFC_READ_TABLE helper (72-char OPTION split) ----------
             List<string> ReadTable(string table, IEnumerable<string> whereLines, int rc, params string[] fieldnames)
             {
                 var f = repo.CreateFunction("RFC_READ_TABLE");
@@ -529,8 +539,7 @@ namespace InformatorSAP.Services
                     foreach (var raw in whereLines)
                     {
                         if (string.IsNullOrWhiteSpace(raw)) continue;
-                        var line = raw.StartsWith(" ") ? raw : " " + raw; // ensure a space before each piece
-
+                        var line = raw.StartsWith(" ") ? raw : " " + raw;
                         int i = 0;
                         while (i < line.Length)
                         {
@@ -541,18 +550,26 @@ namespace InformatorSAP.Services
                     }
                 }
 
+                var t0 = sw.ElapsedMilliseconds;
                 try { f.Invoke(dest); }
-                catch { return new List<string>(); } // treat any read error as "no rows"
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Trace.WriteLine($"[FindWorkCenters] RFC_READ_TABLE {table} FAILED: {ex.Message}");
+                    return new List<string>();
+                }
+                var dur = sw.ElapsedMilliseconds - t0;
 
                 var data = f.GetTable("DATA");
                 var rows = new List<string>(data.Count);
                 for (int i = 0; i < data.Count; i++) rows.Add(data[i].GetString("WA"));
+
+                System.Diagnostics.Trace.WriteLine($"[FindWorkCenters] RFC_READ_TABLE {table}: {rows.Count} rows in {dur} ms (rc={rc})");
                 return rows;
             }
 
             // ---------- CRHD WHERE ----------
             string tedTrim = string.IsNullOrWhiteSpace(ted) ? null : ted.Trim().Trim('*').TrimStart('0').Replace("'", "''");
-            string likeStrict = tedTrim != null ? ("%-" + tedTrim) : null;
+            string likeStrict = tedTrim != null ? ("%-" + tedTrim) : null; // CR05 style (e.g. 2144V201)
             string likeLoose = tedTrim != null ? ("%" + tedTrim) : null;
 
             IEnumerable<string> CrhdWhere(string like)
@@ -562,55 +579,74 @@ namespace InformatorSAP.Services
                 return w;
             }
 
-            // IMPORTANT: When a term is provided, pull more CRHD rows so the later text filter has data to work with.
+            // Pull as much as needed to satisfy rowCount; don’t overfetch if no term
             int targetTake = rowCount > 0 ? rowCount : 2000;
-            int crhdFetch = string.IsNullOrWhiteSpace(term)
-                ? targetTake
-                : Math.Min(2000, Math.Max(targetTake * 10, 200));  // over-fetch, then filter
+            int crhdFetch = string.IsNullOrWhiteSpace(term) ? Math.Min(targetTake, 1000) : Math.Min(2000, Math.Max(targetTake * 10, 200));
 
-            // CRHD: only ARBPL + OBJID
+            // CRHD: ARBPL + OBJID
             var crhd = ReadTable("CRHD", CrhdWhere(likeStrict), crhdFetch, "ARBPL", "OBJID");
+            STEP("CRHD strict LIKE", $"ted='{tedTrim ?? ""}', rows={crhd.Count}, rowcount={crhdFetch}");
             if (crhd.Count == 0 && tedTrim != null)
-                crhd = ReadTable("CRHD", CrhdWhere(likeLoose), crhdFetch, "ARBPL", "OBJID");
+            {
+                var crhdLoose = ReadTable("CRHD", CrhdWhere(likeLoose), crhdFetch, "ARBPL", "OBJID");
+                STEP("CRHD loose LIKE", $"rows={crhdLoose.Count}");
+                if (crhdLoose.Count > 0) crhd = crhdLoose;
+            }
 
             var provisional = crhd
                 .Select(wa => wa.Split('|'))
                 .Where(p => p.Length >= 2)
                 .Select(p => (arbpl: p[0].Trim(), objid: p[1].Trim()))
                 .Where(x => x.arbpl.Length > 0 && x.objid.Length > 0)
+                .GroupBy(x => new { x.arbpl, x.objid })
+                .Select(g => g.First())
                 .ToList();
 
-            if (provisional.Count == 0) return new List<WorkCenterDto>();
-
-            // NOTE: we intentionally DO NOT pre-filter by term on ARBPL here.
-            // We’ll filter by ARBPL or KTEXT AFTER we fetch texts.
-
-            // ---------- CRTX texts via OR-chunks (no IN), 72-char safe ----------
-            var textByObj = new Dictionary<string, string>(StringComparer.Ordinal);
-
-            List<string> BuildCrtxWhere(string spras, IEnumerable<string> ids)
+            STEP("Build provisional", $"count={provisional.Count}");
+            if (provisional.Count == 0)
             {
-                var lines = new List<string>();
-                bool first = true;
-                foreach (var id in ids)
-                {
-                    var sid = id.Replace("'", "''");
-                    var cond = $"( SPRAS = '{spras}' AND OBJTY = 'A' AND OBJID = '{sid}' )";
-                    lines.Add(first ? cond : "OR " + cond);
-                    first = false;
-                }
-                return lines;
+                System.Diagnostics.Trace.WriteLine($"[FindWorkCenters] TOTAL {sw.ElapsedMilliseconds} ms (no rows)");
+                return new List<WorkCenterDto>();
             }
 
-            void FetchTexts(string spras)
+            // ---------- FAST PATH: when term is empty, SKIP CRTX ----------
+            // This avoids thousands of tiny CRTX calls when ted=0 returns many WCs.
+            if (string.IsNullOrWhiteSpace(term))
             {
-                // conservative chunk so each WHERE line stays well under 72 chars
-                const int chunk = 6;
-                var ids = provisional.Select(x => x.objid).Distinct().ToList();
-                for (int i = 0; i < ids.Count; i += chunk)
+                var fast = provisional
+                    .OrderBy(x => x.arbpl)
+                    .Take(targetTake)
+                    .Select(x => new WorkCenterDto { DelovnoMesto = x.arbpl, Opis = null })
+                    .ToList();
+                STEP("Fast path (no CRTX)", $"returned={fast.Count}");
+                System.Diagnostics.Trace.WriteLine($"[FindWorkCenters] TOTAL {sw.ElapsedMilliseconds} ms");
+                return fast;
+            }
+
+            // ---------- SLOW PATH: need texts -> use big IN chunks, not tiny ORs ----------
+            var textByObj = new Dictionary<string, string>(StringComparer.Ordinal);
+            var allIds = provisional.Select(x => x.objid).Distinct().ToList();
+
+            // make a single IN (...) predicate, split across OPTIONS lines by our helper
+            IEnumerable<string> BuildINWhere(string lang, IEnumerable<string> ids)
+            {
+                // build: "OBJTY = 'A' AND SPRAS = '{lang}' AND OBJID IN ('1','2',...,'N')"
+                var quoted = ids.Select(s => "'" + s.Replace("'", "''") + "'");
+                var inList = string.Join(",", quoted);
+                var where = $"OBJTY = 'A' AND SPRAS = '{lang}' AND OBJID IN ( {inList} )";
+                return new[] { where };
+            }
+
+            void FetchTextsIN(string spras, int chunkSize)
+            {
+                var tStart = sw.ElapsedMilliseconds;
+                int calls = 0, gathered = 0;
+
+                for (int i = 0; i < allIds.Count; i += chunkSize)
                 {
-                    var where = BuildCrtxWhere(spras, ids.Skip(i).Take(chunk));
-                    var rows = ReadTable("CRTX", where, 0, "OBJID", "KTEXT");
+                    var slice = allIds.Skip(i).Take(chunkSize).ToList();
+                    var rows = ReadTable("CRTX", BuildINWhere(spras, slice), 0, "OBJID", "KTEXT");
+                    calls++;
                     foreach (var wa in rows)
                     {
                         var p = wa.Split('|');
@@ -619,16 +655,34 @@ namespace InformatorSAP.Services
                             var id = p[0].Trim();
                             var txt = p[1].Trim();
                             if (id.Length > 0 && txt.Length > 0 && !textByObj.ContainsKey(id))
+                            {
                                 textByObj[id] = txt;
+                                gathered++;
+                            }
                         }
                     }
                 }
+                STEP($"CRTX via IN spras={spras}", $"ids={allIds.Count}, calls={calls}, fetched={gathered}, took={sw.ElapsedMilliseconds - tStart} ms");
             }
 
-            // try SL (5) then EN (E) for the remaining ones
-            FetchTexts("5");
-            if (textByObj.Count < provisional.Select(x => x.objid).Distinct().Count())
-                FetchTexts("E");
+            // Choose a large chunk: OBJID is short, so 120 keeps WHERE comfortable even after 72-char wrapping.
+            const int CRTX_CHUNK = 120;
+
+            // Preferred language then fallback for missing only
+            FetchTextsIN("5", CRTX_CHUNK);
+
+            if (textByObj.Count < allIds.Count)
+            {
+                var missing = allIds.Where(id => !textByObj.ContainsKey(id)).ToList();
+                if (missing.Count > 0)
+                {
+                    // temporarily narrow allIds to missing for fallback to reduce calls
+                    var savedAll = allIds;
+                    allIds = missing;
+                    FetchTextsIN("E", CRTX_CHUNK);
+                    allIds = savedAll;
+                }
+            }
 
             // ---------- compose + final filter (by ARBPL OR KTEXT) ----------
             var results = provisional.Select(x => new WorkCenterDto
@@ -637,56 +691,27 @@ namespace InformatorSAP.Services
                 Opis = textByObj.TryGetValue(x.objid, out var t) ? t : null
             });
 
-            if (!string.IsNullOrWhiteSpace(term))
+            var tfilter = term?.Trim();
+            if (!string.IsNullOrEmpty(tfilter))
             {
-                var t = term.Trim();
                 results = results.Where(x =>
-                    (x.DelovnoMesto?.IndexOf(t, StringComparison.OrdinalIgnoreCase) ?? -1) >= 0 ||
-                    (x.Opis?.IndexOf(t, StringComparison.OrdinalIgnoreCase) ?? -1) >= 0
+                    (x.DelovnoMesto?.IndexOf(tfilter, StringComparison.OrdinalIgnoreCase) ?? -1) >= 0 ||
+                    (x.Opis?.IndexOf(tfilter, StringComparison.OrdinalIgnoreCase) ?? -1) >= 0
                 );
             }
 
-            return results
+            var list = results
                 .GroupBy(x => new { x.DelovnoMesto, x.Opis })
                 .Select(g => g.First())
                 .OrderBy(x => x.DelovnoMesto)
                 .ThenBy(x => x.Opis)
                 .Take(targetTake)
                 .ToList();
+
+            STEP("Compose/Filter + Take", $"returned={list.Count}, targetTake={targetTake}");
+            System.Diagnostics.Trace.WriteLine($"[FindWorkCenters] TOTAL {sw.ElapsedMilliseconds} ms");
+            return list;
         }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
         // === OPERATION STATUS (COOIS: PPIO000 Postopki) ==============================
@@ -832,230 +857,487 @@ namespace InformatorSAP.Services
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-        public List<CooisOrderRowDto> GetOrdersByWorkCenter(string workCenter, string plant = "1061", string language = "SL", int take = 200)
+        public List<CooisOrderRowDto> GetOrdersByWorkCenter(
+            string workCenter,
+            string plant = "1061",
+            string language = "SL",
+            int take = 200,
+            string mrpController = null,     // NEW: AFKO.DISPO (e.g. "647")
+            string headerStatus = null       // NEW: header system status filter (e.g. "I0002" or "LANS")
+        )
         {
+            var swTotal = System.Diagnostics.Stopwatch.StartNew();
+            long _stepPrev = 0;
+            void STEP(string name, string extra = null)
+            {
+                var now = swTotal.ElapsedMilliseconds;
+                System.Diagnostics.Trace.WriteLine(
+                    $"[GetOrdersByWorkCenter] {name}: +{now - _stepPrev} ms (total {now} ms){(string.IsNullOrWhiteSpace(extra) ? "" : " | " + extra)}");
+                _stepPrev = now;
+            }
 
-            var result = new List<CooisOrderRowDto>();
+            // aggregate timers for hot spots
+            long _statusMs = 0;
+            int _statusCalls = 0;
 
-            // 1. Get CRHD.OBJID for the given work center and plant
-            var crhdRows = ReadTable("CRHD",
-                fields: new[] { "OBJID" },
-                options: new[] { $"ARBPL = '{workCenter}' AND WERKS = '{plant}'" }
-            );
-            if (!crhdRows.Any()) return result;
-            var objIds = crhdRows.Select(r => r["OBJID"]).Distinct();
-            
-            //2.Get operations(routing numbers and op.numbers) for each OBJID
+            List<string> orderNumbers = null;  // for logging in finally
+            try
+            {
 
-           var aufplOps = new Dictionary<string, List<string>>();  // AUFPL -> list of VORNR
-            foreach (var objId in objIds)
+                var result = new List<CooisOrderRowDto>();
+                if (string.IsNullOrWhiteSpace(workCenter)) return result;
+
+                var dest = RfcDestinationManager.GetDestination("INFORMATOR_SAP");
+                var repo = dest.Repository;
+
+                string spras = (language ?? "SL").ToUpperInvariant() == "EN" ? "E" : "5";
+
+                // ---------- helpers ----------
+                IRfcTable ReadTable(string table, int rowCount,
+                                    Action<IRfcTable> addFields, Action<IRfcTable> addOptions)
                 {
-                    var afvcRows = ReadTable("AFVC",
-                        fields: new[] { "AUFPL", "VORNR" },
-                        options: new[] { $"ARBID = '{objId}'" }
-                    );
-                    foreach (var row in afvcRows)
+                    var f = repo.CreateFunction("RFC_READ_TABLE");
+                    f.SetValue("QUERY_TABLE", table);
+                    f.SetValue("DELIMITER", "|");
+                    if (rowCount > 0) f.SetValue("ROWCOUNT", rowCount);
+                    addFields?.Invoke(f.GetTable("FIELDS"));
+                    addOptions?.Invoke(f.GetTable("OPTIONS"));
+                    try { f.Invoke(dest); } catch { return null; }
+                    return f.GetTable("DATA");
+                }
+                void AppendWhere(IRfcTable opts, string where)
+                {
+                    if (string.IsNullOrWhiteSpace(where)) return;
+                    var line = where.StartsWith(" ") ? where : " " + where;
+                    for (int i = 0; i < line.Length; i += 72)
                     {
-                        string aufpl = row["AUFPL"], vornr = row["VORNR"];
-                        if (!aufplOps.ContainsKey(aufpl))
-                            aufplOps[aufpl] = new List<string>();
-                        if (!aufplOps[aufpl].Contains(vornr))
-                            aufplOps[aufpl].Add(vornr);
+                        var part = line.Substring(i, Math.Min(72, line.Length - i));
+                        opts.Append(); opts.SetValue("TEXT", part);
                     }
                 }
-            if (!aufplOps.Any()) return result;
+                decimal ParseQuan(string s)
+                {
+                    if (string.IsNullOrWhiteSpace(s)) return 0m;
+                    if (s.IndexOf('.') < 0 && s.IndexOf(',') < 0 &&
+                        decimal.TryParse(s, System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out var iv))
+                        return iv / 1000m; // QUAN(3)
+                    decimal.TryParse(s.Replace(',', '.'), System.Globalization.NumberStyles.Any, CultureInfo.InvariantCulture, out var dv);
+                    return dv;
+                }
 
-            // 3. Retrieve orders (AFKO) matching these routing numbers and plant
-            // Build filter: (AUFPL = 'xxx' OR AUFPL = 'yyy' ...) AND WERKS = plant
-            var aufplConditions = string.Join(" OR ", aufplOps.Keys.Select(u => $"AUFPL = '{u}'"));
-            var afkoFilter = $"({aufplConditions}) AND WERKS = '{plant}'";
+                // ---------- 1) CRHD -> OBJID (work center internal id) ----------
+                string objid = null;
+                {
+                    var data = ReadTable("CRHD", 1,
+                        f => { f.Append(); f.SetValue("FIELDNAME", "OBJID"); },
+                        o =>
+                        {
+                            o.Append(); o.SetValue("TEXT", "OBJTY = 'A'");
+                            o.Append(); o.SetValue("TEXT", "AND WERKS = '" + plant + "'");
+                            o.Append(); o.SetValue("TEXT", "AND ARBPL = '" + workCenter.Trim() + "'");
+                        });
+                    if (data == null || data.RowCount == 0) return result;
+                    objid = data[0].GetString("WA").Trim();
+                    if (string.IsNullOrEmpty(objid)) return result;
+                    STEP("CRHD (objid)");
+                }
 
-            System.Diagnostics.Trace.WriteLine($"AFKO filter string: {afkoFilter}");
+                // ---------- 2) AFVC -> AUFPL, VORNR, OBJNR (ops at this WC) ----------
+                var afvcOps = new List<Tuple<string, string, string>>(); // (AUFPL, VORNR, OBJNR)
+                {
+                    var data = ReadTable("AFVC", 8000,
+                        f =>
+                        {
+                            f.Append(); f.SetValue("FIELDNAME", "AUFPL");
+                            f.Append(); f.SetValue("FIELDNAME", "VORNR");
+                            f.Append(); f.SetValue("FIELDNAME", "OBJNR");
+                        },
+                        o => { o.Append(); o.SetValue("TEXT", "ARBID = '" + objid + "'"); });
+                    if (data == null) return result;
 
-            var afkoRows = ReadTable("AFKO",
-                fields: new[] { "AUFNR", "MATNR", "GAMNG", "GMEIN", "AUFPL" },
-                options: new[] { afkoFilter }
-            );
+                    for (int i = 0; i < data.RowCount; i++)
+                    {
+                        var p = data[i].GetString("WA").Split('|');
+                        if (p.Length < 3) continue;
+                        var aufpl = p[0].Trim();
+                        var vornr = p[1].Trim();
+                        var objnrOp = p[2].Trim();
+                        if (!string.IsNullOrEmpty(aufpl) && !string.IsNullOrEmpty(vornr) && !string.IsNullOrEmpty(objnrOp))
+                            afvcOps.Add(Tuple.Create(aufpl, vornr, objnrOp));
+                        if (take > 0 && afvcOps.Count >= take * 5) break;
+                    }
+                }
+                if (afvcOps.Count == 0) return result;
+                STEP("AFVC (ops)", $"ops={afvcOps.Count}");
 
 
-            //// 4. For each order, check status and gather yield
-            //foreach (var row in afkoRows)
-            //{
-            //    if (result.Count >= take) break;
-            //    string aufnr = row["AUFNR"], matnr = row["MATNR"];
-            //    string gamng = row["GAMNG"], gmein = row["GMEIN"], aufpl = row["AUFPL"];
+                // ---------- 3) AFKO -> AUFNR (+DISPO for optional MRP filter)  [BATCHED] ----------
+                orderNumbers = new List<string>();
+                var aufnrByAufpl = new Dictionary<string, string>(StringComparer.Ordinal);
+                var dispoByAufnr = new Dictionary<string, string>(StringComparer.Ordinal);
 
-            //    // 4a. Get object number from AUFK
-            //    var aufkRows = ReadTable("AUFK",
-            //        fields: new[] { "OBJNR" },
-            //        options: new[] { $"AUFNR = '{aufnr}'", "LOEKZ <> 'X'" }
-            //    );
-            //    if (!aufkRows.Any()) continue;
-            //    string objnr = aufkRows[0]["OBJNR"];
+                // distinct AUFPLs from AFVC
+                var aufplList = afvcOps.Select(x => x.Item1).Distinct().ToList();
 
-            //    // 4b. Check active system statuses (JEST) for OBJNR
-            //    var jestRows = ReadTable("JEST",
-            //        fields: new[] { "STAT" },
-            //        options: new[] { $"OBJNR = '{objnr}'", "INACT = ' '" }
-            //    );
-            //    bool statusOk = false;
-            //    string statusText = null;
-            //    foreach (var jrow in jestRows)
-            //    {
-            //        string stat = jrow["STAT"]; // e.g. 'I0002'
-            //                                    // Direct code check
-            //        if (stat == "I0002")
-            //        {
-            //            statusOk = true;
-            //            statusText = stat;
-            //            break;
-            //        }
-            //        // Else check text via TJ02T for given language
-            //        var tjRows = ReadTable("TJ02T",
-            //            fields: new[] { "TXT04" },
-            //            options: new[] { $"ISTAT = '{stat}'", $"SPRAS = '{language}'" }
-            //        );
-            //        if (tjRows.Any())
-            //        {
-            //            var txt04 = tjRows[0]["TXT04"];
-            //            if (txt04 == "LANS" || txt04 == "REL" || txt04 == "RES")
-            //            {
-            //                statusOk = true;
-            //                statusText = txt04;
-            //                break;
-            //            }
-            //        }
-            //    }
-            //    if (!statusOk) continue;
+                const int AFKO_CHUNK = 120; // safe chunk size for IN (...) while OPTIONS wraps at 72 chars
+                bool enough = false;
 
-            //    // 5. Sum confirmed yield (LMNGA) from AFRU for operations at this WC
-            //    decimal totalYield = 0;
-            //    if (aufplOps.TryGetValue(aufpl, out var ops))
-            //    {
-            //        var afruRows = ReadTable("AFRU",
-            //            fields: new[] { "VORNR", "LMNGA" },
-            //            options: new[] { $"AUFNR = '{aufnr}'" }
-            //        );
-            //        foreach (var afru in afruRows)
-            //        {
-            //            string v = afru["VORNR"];
-            //            if (ops.Contains(v) && decimal.TryParse(afru["LMNGA"], out var lmn))
-            //                totalYield += lmn;
-            //        }
-            //    }
+                for (int i = 0; i < aufplList.Count && !enough; i += AFKO_CHUNK)
+                {
+                    var slice = aufplList.Skip(i).Take(AFKO_CHUNK).ToList();
+                    var inList = string.Join(",", slice.Select(s => $"'{s}'"));
 
-            //    // 6. Get material text from MAKT
-            //    var maktRows = ReadTable("MAKT",
-            //        fields: new[] { "MAKTX" },
-            //        options: new[] { $"MATNR = '{matnr}'", $"SPRAS = '{language}'" }
-            //    );
-            //    string maktx = maktRows.Any() ? maktRows[0]["MAKTX"] : null;
+                    // push DISPO server-side if provided (reduces rows returned)
+                    var where = $"AUFPL IN ( {inList} )" +
+                                (string.IsNullOrWhiteSpace(mrpController) ? "" : $" AND DISPO = '{mrpController.Trim()}'");
 
-            //    // Add to result list
-            //    result.Add(new CooisOrderRowDto
-            //    {
-            //        Nalog = aufnr,
-            //        Material = matnr,
-            //        StdKolicina = decimal.TryParse(gamng, out var qty) ? qty : 0,
-            //        EM = gmein,
-            //        Donos = totalYield,
-            //        KratkiTekstMateriala = maktx,
-            //        StatusSistema = statusText
-            //    });
-            //}
+                    var data = ReadTable("AFKO", 0,
+                        f => {
+                            f.Append(); f.SetValue("FIELDNAME", "AUFNR");
+                            f.Append(); f.SetValue("FIELDNAME", "DISPO");
+                            f.Append(); f.SetValue("FIELDNAME", "AUFPL");
+                        },
+                        o => { AppendWhere(o, where); });
 
-            //return result;
-            return null;
+                    if (data == null) continue;
+
+                    for (int r = 0; r < data.RowCount; r++)
+                    {
+                        var p = data[r].GetString("WA").Split('|');
+                        if (p.Length < 3) continue;
+
+                        var aufnr = (p[0] ?? "").Trim().PadLeft(12, '0');
+                        var dispo = (p[1] ?? "").Trim();
+                        var aufpl = (p[2] ?? "").Trim();
+
+                        if (aufpl.Length == 0 || aufnr.Length == 0) continue;
+
+                        if (!aufnrByAufpl.ContainsKey(aufpl)) aufnrByAufpl[aufpl] = aufnr;
+                        if (!dispoByAufnr.ContainsKey(aufnr)) dispoByAufnr[aufnr] = dispo;
+
+                        if (!orderNumbers.Contains(aufnr))
+                        {
+                            orderNumbers.Add(aufnr);
+                            if (take > 0 && orderNumbers.Count >= take) { enough = true; break; }
+                        }
+                    }
+                }
+                if (orderNumbers.Count == 0) return result;
+                STEP("AFKO (orders)", $"orders={orderNumbers.Count}");
+
+                // ---------- 4) Prefilter orders by header status TXT04 = 'LANS' (batched) ----------
+                var allowed = new HashSet<string>(StringComparer.Ordinal);
+
+                // AUFK: AUFNR -> OBJNR (batch)
+                var aufnrToObjnr = new Dictionary<string, string>(StringComparer.Ordinal);
+                {
+                    const int chunk = 80;
+                    for (int i = 0; i < orderNumbers.Count; i += chunk)
+                    {
+                        var slice = orderNumbers.Skip(i).Take(chunk).ToList();
+                        var inList = string.Join(",", slice.Select(a => $"'{a}'"));
+                        var data = ReadTable("AUFK", 0,
+                            f => { f.Append(); f.SetValue("FIELDNAME", "AUFNR"); f.Append(); f.SetValue("FIELDNAME", "OBJNR"); },
+                            o => { AppendWhere(o, $"AUFNR IN ( {inList} )"); });
+                        if (data == null) continue;
+
+                        for (int r = 0; r < data.RowCount; r++)
+                        {
+                            var p = data[r].GetString("WA").Split('|');
+                            if (p.Length < 2) continue;
+                            var auf = (p[0] ?? "").Trim().PadLeft(12, '0');
+                            var obj = (p[1] ?? "").Trim();
+                            if (auf.Length > 0 && obj.Length > 0) aufnrToObjnr[auf] = obj;
+                        }
+                    }
+                    if (aufnrToObjnr.Count == 0) return result;
+                }
+
+                // JEST: active statuses per OBJNR (batch)
+                var objToStats = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+                var allStatCodes = new HashSet<string>(StringComparer.Ordinal);
+                {
+                    var objnrs = aufnrToObjnr.Values.Distinct().ToList();
+                    const int chunk = 100;
+                    for (int i = 0; i < objnrs.Count; i += chunk)
+                    {
+                        var slice = objnrs.Skip(i).Take(chunk).ToList();
+                        var inList = string.Join(",", slice.Select(o => $"'{o}'"));
+                        var data = ReadTable("JEST", 0,
+                            f => { f.Append(); f.SetValue("FIELDNAME", "OBJNR"); f.Append(); f.SetValue("FIELDNAME", "STAT"); f.Append(); f.SetValue("FIELDNAME", "INACT"); },
+                            o => { AppendWhere(o, $"OBJNR IN ( {inList} ) AND INACT = ' '"); });
+                        if (data == null) continue;
+
+                        for (int r = 0; r < data.RowCount; r++)
+                        {
+                            var p = data[r].GetString("WA").Split('|');
+                            if (p.Length < 3) continue;
+                            var obj = (p[0] ?? "").Trim();
+                            var stat = (p[1] ?? "").Trim(); // e.g., I0002
+                            if (obj.Length == 0 || stat.Length == 0) continue;
+
+                            if (!objToStats.TryGetValue(obj, out var set)) objToStats[obj] = set = new HashSet<string>(StringComparer.Ordinal);
+                            set.Add(stat);
+                            allStatCodes.Add(stat);
+                        }
+                    }
+                    if (objToStats.Count == 0) { orderNumbers.Clear(); return result; }
+                }
+
+                // TJ02T: STAT -> TXT04 (preferred language, then fallback EN)
+                var statToTxt = new Dictionary<string, string>(StringComparer.Ordinal);
+
+                void FetchTJ02T(IEnumerable<string> codes, string lang)
+                {
+                    var list = codes.ToList();
+                    const int chunk = 120;
+                    for (int i = 0; i < list.Count; i += chunk)
+                    {
+                        var slice = list.Skip(i).Take(chunk).ToList();
+                        var inList = string.Join(",", slice.Select(s => $"'{s}'"));
+                        var data = ReadTable("TJ02T", 0,
+                            f => { f.Append(); f.SetValue("FIELDNAME", "ISTAT"); f.Append(); f.SetValue("FIELDNAME", "TXT04"); },
+                            o => { AppendWhere(o, $"ISTAT IN ( {inList} ) AND SPRAS = '{lang}'"); });
+                        if (data == null) continue;
+
+                        for (int r = 0; r < data.RowCount; r++)
+                        {
+                            var p = data[r].GetString("WA").Split('|');
+                            if (p.Length < 2) continue;
+                            var code = (p[0] ?? "").Trim();
+                            var txt = (p[1] ?? "").Trim();
+                            if (code.Length > 0 && !statToTxt.ContainsKey(code)) statToTxt[code] = txt;
+                        }
+                    }
+                }
+
+                // preferred language
+                FetchTJ02T(allStatCodes, spras);
+                // fallback EN for missing
+                if (!string.Equals(spras, "E", StringComparison.OrdinalIgnoreCase))
+                {
+                    var missing = allStatCodes.Where(c => !statToTxt.ContainsKey(c));
+                    FetchTJ02T(missing, "E");
+                }
+
+                // Build allowed AUFNR set where any active status TXT04 == "LANS"
+                foreach (var kv in aufnrToObjnr)
+                {
+                    if (!objToStats.TryGetValue(kv.Value, out var codes)) continue;
+                    if (codes.Any(c => statToTxt.TryGetValue(c, out var t) && string.Equals(t, "LANS", StringComparison.OrdinalIgnoreCase)))
+                        allowed.Add(kv.Key);
+                }
+
+                STEP("Status prefilter (AUFK/JEST/TJ02T)", $"kept={allowed.Count} of {orderNumbers.Count}");
+
+
+                // ---------- 5) AFRU -> confirmed yield ("Donos") exactly like COOIS for the WC ----------
+                var donos = new Dictionary<string, decimal>(StringComparer.Ordinal);
+
+                const int afruChunk = 60; // safe chunk size
+                for (int i = 0; i < orderNumbers.Count; i += afruChunk)
+                {
+                    var slice = orderNumbers.Skip(i).Take(afruChunk).ToList();
+                    var inList = string.Join(",", slice.Select(a => $"'{a}'"));
+
+                    var data = ReadTable("AFRU", 0,
+                        f =>
+                        {
+                            f.Append(); f.SetValue("FIELDNAME", "AUFNR");  // order
+                            f.Append(); f.SetValue("FIELDNAME", "LMNGA");  // confirmed yield (QUAN(3))
+                            f.Append(); f.SetValue("FIELDNAME", "STOKZ");  // reversal indicator
+                                                                           // (optional) keep if you want to debug units later:
+                                                                           // f.Append(); f.SetValue("FIELDNAME", "MEINH"); // op UoM of LMNGA
+                        },
+                        o =>
+                        {
+                            // COOIS at WC scope: only confirmations for this WC (ARBID), ignore reversals
+                            // Plant filter is usually not required here, AFRU is tied by ARBID anyway.
+                            AppendWhere(o, $"ARBID = '{objid}' AND STOKZ <> 'X' AND AUFNR IN ( {inList} )");
+                        });
+
+                    if (data == null) continue;
+
+                    for (int r = 0; r < data.RowCount; r++)
+                    {
+                        var p = data[r].GetString("WA").Split('|');
+                        if (p.Length < 2) continue;
+
+                        var auf = (p[0] ?? "").Trim().PadLeft(12, '0');
+                        var qty = ParseQuan(p[1]?.Trim()); // QUAN(3) -> decimal
+
+                        if (string.IsNullOrEmpty(auf)) continue;
+                        if (!donos.ContainsKey(auf)) donos[auf] = 0m;
+                        donos[auf] += qty;
+                    }
+                }
+                STEP("AFRU (donos via LMNGA @ WC)");
+
+
+                // ---------- 6) BAPI_PRODORD_GET_LIST -> header info (qty/unit/material/text) ----------
+                IRfcTable orderHeader = null;
+                try
+                {
+                    var funcList = repo.CreateFunction("BAPI_PRODORD_GET_LIST");
+                    var orderRange = funcList.GetTable("ORDER_NUMBER_RANGE");
+                    foreach (var ord in orderNumbers)
+                    {
+                        orderRange.Append();
+                        orderRange.SetValue("SIGN", "I");
+                        orderRange.SetValue("OPTION", "EQ");
+                        orderRange.SetValue("LOW", ord);
+                        orderRange.SetValue("HIGH", "");
+                    }
+                    var plantRange = funcList.GetTable("PRODPLANT_RANGE");
+                    plantRange.Append();
+                    plantRange.SetValue("SIGN", "I");
+                    plantRange.SetValue("OPTION", "EQ");
+                    plantRange.SetValue("LOW", plant);
+                    plantRange.SetValue("HIGH", "");
+                    funcList.Invoke(dest);
+                    orderHeader = funcList.GetTable("ORDER_HEADER");
+                }
+                catch { orderHeader = null; }
+                if (orderHeader == null) return result;
+                STEP("BAPI_PRODORD_GET_LIST", $"rows={orderHeader.RowCount}");
+
+
+                // ---------- 7) MAKT -> material text (BATCHED via IN (...)) ----------
+
+                var mtexts = new Dictionary<string, string>(StringComparer.Ordinal);
+                var materials = new HashSet<string>(StringComparer.Ordinal);
+
+                for (int i = 0; i < orderHeader.RowCount; i++)
+                {
+                    var m = orderHeader[i].GetString("MATERIAL") ?? "";
+                    m = m.Trim().PadLeft(18, '0');
+                    if (!string.IsNullOrEmpty(m)) materials.Add(m);
+                }
+
+                if (materials.Count > 0)
+                {
+                    void FetchMaktBatch(IEnumerable<string> mats, string lang)
+                    {
+                        // Keep chunks modest; AppendWhere will hard-wrap to 72 chars safely.
+                        const int chunk = 60;
+                        var list = mats.ToList();
+
+                        for (int i = 0; i < list.Count; i += chunk)
+                        {
+                            var slice = list.Skip(i).Take(chunk).ToList();
+                            // MATNR IN ('000000000000000001','000000000000000002',...) AND SPRAS = '5'
+                            var inList = string.Join(",", slice.Select(s => $"'{s}'"));
+                            var where = $"MATNR IN ( {inList} ) AND SPRAS = '{lang}'";
+
+                            var data = ReadTable("MAKT", 0,
+                                f =>
+                                {
+                                    f.Append(); f.SetValue("FIELDNAME", "MATNR");
+                                    f.Append(); f.SetValue("FIELDNAME", "MAKTX");
+                                },
+                                o => { AppendWhere(o, where); });
+
+                            if (data == null) continue;
+
+                            for (int r = 0; r < data.RowCount; r++)
+                            {
+                                var p = data[r].GetString("WA").Split('|');
+                                if (p.Length < 2) continue;
+
+                                var mat = (p[0] ?? "").Trim().PadLeft(18, '0');
+                                var txt = (p[1] ?? "").Trim();
+
+                                if (mat.Length > 0 && !mtexts.ContainsKey(mat))
+                                    mtexts[mat] = txt;
+                            }
+                        }
+                    }
+
+                    // 1) Preferred language first
+                    FetchMaktBatch(materials, spras);
+
+                    // 2) Fallback to EN only for missing
+                    if (!string.Equals(spras, "E", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var missing = materials.Where(m => !mtexts.ContainsKey(m)).ToList();
+                        if (missing.Count > 0) FetchMaktBatch(missing, "E");
+                    }
+
+                    // 3) Ensure all keys exist; later we still fallback to MATERIAL_TEXT per row
+                    foreach (var m in materials)
+                        if (!mtexts.ContainsKey(m)) mtexts[m] = "";
+                }
+                STEP("MAKT batch", $"materials={materials.Count}; texts={mtexts.Count}");
+
+
+
+                // ---------- 8) Build result rows (Status via GetOperationStatusForOrderWorkCenter) ----------
+                for (int i = 0; i < orderHeader.RowCount; i++)
+                {
+                    var row = orderHeader[i];
+
+                    string aufnr = (row.GetString("ORDER_NUMBER") ?? "").Trim().PadLeft(12, '0');
+                    if (!orderNumbers.Contains(aufnr)) continue;
+
+                    string matnr = (row.GetString("MATERIAL") ?? "").Trim().PadLeft(18, '0');
+
+                    decimal stdQty = 0m;
+                    try { stdQty = row.GetDecimal("TARGET_QUANTITY"); }
+                    catch
+                    {
+                        if (decimal.TryParse(row.GetString("TARGET_QUANTITY"),
+                            System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var tmp))
+                            stdQty = tmp;
+                    }
+                    string unit = (row.GetString("UNIT") ?? "").Trim();
+
+                    if (!mtexts.TryGetValue(matnr, out var matText)) matText = (row.GetString("MATERIAL_TEXT") ?? "").Trim();
+
+                    // NEW: status from the dedicated method (operation-level, earliest op at WC)
+                    var _tStatusStart = swTotal.ElapsedMilliseconds;
+                    // filter by precomputed allowed set (no per-order status calls)
+                    if (!allowed.Contains(aufnr)) continue;
+                    const string statusText = "LANS"; // optional label to display
+                    _statusMs += (swTotal.ElapsedMilliseconds - _tStatusStart);
+
+                    _statusCalls++;
+                    // keep only orders that have LANS in header/system statuses (active)
+                    if (string.IsNullOrWhiteSpace(statusText) ||
+                    !statusText.Split(' ').Any(s => string.Equals(s, "LANS", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        continue;
+                    }
+                    STEP("Statuses (AUFK/JEST/TJ02T)", $"calls={_statusCalls}; total={_statusMs} ms; avg={(_statusCalls == 0 ? 0 : _statusMs / _statusCalls)} ms");
+
+
+                    var sumAfru = donos.TryGetValue(aufnr, out var v) ? v : 0m;
+
+                    // COOIS caps displayed yield to the order qty
+                    var clippedDonos = sumAfru > stdQty ? stdQty : sumAfru;
+
+                    result.Add(new CooisOrderRowDto
+                    {
+                        Nalog = aufnr,
+                        Material = matnr,
+                        StdKolicina = stdQty,
+                        Donos = clippedDonos,
+                        EM = unit,
+                        KratkiTekstMateriala = matText,
+                        StatusSistema = statusText ?? ""
+                    });
+
+                    if (take > 0 && result.Count >= take) break;
+                }
+                STEP("Build result", $"rows={result.Count}");
+
+                return (take > 0) ? result.Take(take).ToList() : result;
+            }
+            finally
+            {
+                System.Diagnostics.Trace.WriteLine(
+                    $"[GetOrdersByWorkCenter] TOTAL {swTotal.ElapsedMilliseconds} ms ");
+            }
         }
-
-        // Helper method to call RFC_READ_TABLE (using SAP NCo)
-        // Returns list of dictionaries mapping field name -> string value.
-        private List<Dictionary<string, string>> ReadTable(string tableName, string[] fields, string[] options)
-        {
-            // Get the SAP destination (adjust the name if needed)
-            var dest = RfcDestinationManager.GetDestination("INFORMATOR_SAP");
-            var func = dest.Repository.CreateFunction("RFC_READ_TABLE");
-            func.SetValue("QUERY_TABLE", tableName);
-            func.SetValue("DELIMITER", "|");
-
-            // Set fields
-            var ftab = func.GetTable("FIELDS");
-            foreach (var field in fields)
-            {
-                ftab.Append();
-                ftab.SetValue("FIELDNAME", field);
-            }
-
-            // Set options (WHERE clauses)
-            var optab = func.GetTable("OPTIONS");
-            foreach (var opt in options)
-            {
-                optab.Append();
-                optab.SetValue("TEXT", opt);
-            }
-
-            // Invoke the function on the destination
-            func.Invoke(dest);
-
-            // Read the data returned
-            var data = func.GetTable("DATA");
-
-            var results = new List<Dictionary<string, string>>();
-
-            foreach (IRfcStructure row in data)
-            {
-                // Split the row by delimiter and map to field names
-                var vals = row.GetString("WA").Split('|');
-                var dict = new Dictionary<string, string>();
-                for (int i = 0; i < fields.Length && i < vals.Length; i++)
-                    dict[fields[i]] = vals[i].Trim();
-                results.Add(dict);
-            }
-            return results;
-        }
-
-
-
-
-
-
 
         // helpers
         private static string AlphaOut(string s)
