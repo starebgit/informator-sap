@@ -330,22 +330,38 @@ namespace InformatorSAP.Services
 
                 string vornr = parts[2].Trim();
 
-                // AFRU → sum confirmed yield (LMNGA) for this operation
+                // AFRU → sum confirmed yield (LMNGA) for this operation, incl. STORNO
                 decimal sumYield = 0m;
                 var fAfru = repo.CreateFunction("RFC_READ_TABLE");
                 fAfru.SetValue("QUERY_TABLE", "AFRU");
                 fAfru.SetValue("DELIMITER", "|");
+
+                // LMNGA + STOKZ (reversal indicator)
                 var fldsAfru = fAfru.GetTable("FIELDS");
                 fldsAfru.Append(); fldsAfru.SetValue("FIELDNAME", "LMNGA");
+                fldsAfru.Append(); fldsAfru.SetValue("FIELDNAME", "STOKZ");
+
                 var optAfru = fAfru.GetTable("OPTIONS");
                 optAfru.Append(); optAfru.SetValue("TEXT", $"AUFNR = '{aufnr}'");
                 optAfru.Append(); optAfru.SetValue("TEXT", $"AND VORNR = '{vornr}'");
+
                 fAfru.Invoke(dest);
 
                 foreach (IRfcStructure y in fAfru.GetTable("DATA"))
                 {
-                    var p = y.GetString("WA").Split('|');
-                    if (p.Length > 0 && decimal.TryParse(p[0].Trim(), out var yv)) sumYield += yv;
+                    var parts2 = y.GetString("WA").Split('|');
+                    if (parts2.Length == 0) continue;
+
+                    var qtyStr = parts2[0].Trim();               // LMNGA (QUAN(3))
+                    var stokz = parts2.Length > 1 ? parts2[1].Trim() : "";
+
+                    if (!decimal.TryParse(qtyStr, out var raw)) continue;
+
+                    // STOKZ = 'X' → storno → subtract its quantity
+                    if (stokz == "X")
+                        sumYield -= raw;
+                    else
+                        sumYield += raw;
                 }
 
                 results.Add(new OperationSummaryDto
