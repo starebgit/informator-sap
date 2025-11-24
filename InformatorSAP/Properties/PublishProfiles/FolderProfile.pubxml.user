@@ -2,8 +2,8 @@
 <!-- https://go.microsoft.com/fwlink/?LinkID=208121. -->
 <Project>
   <PropertyGroup>
-    <_PublishTargetUrl>C:\publish\InformatorSAP</_PublishTargetUrl>
-    <History>True|2025-11-07T11:00:07.5995574Z||;True|2025-11-06T11:50:37.2203810+01:00||;True|2025-10-27T16:10:31.7979883+01:00||;True|2025-10-27T13:38:02.9816938+01:00||;True|2025-10-17T13:40:15.4841287+02:00||;True|2025-09-30T12:01:10.1347012+02:00||;True|2025-09-17T10:30:08.8174926+02:00||;True|2025-09-02T08:29:41.9514127+02:00||;True|2025-07-22T13:32:08.0649480+02:00||;True|2025-07-22T13:31:28.6530619+02:00||;True|2025-07-22T12:25:57.6962684+02:00||;True|2025-07-07T13:26:48.5491992+02:00||;True|2025-07-07T13:26:28.6399061+02:00||;True|2025-07-07T11:01:06.7571771+02:00||;</History>
+    <_PublishTargetUrl>\\ESI1AW14\_deploy\InformatorSAP_build</_PublishTargetUrl>
+    <History>True|2025-11-24T09:01:06.4788861Z||;True|2025-11-14T12:15:41.6911185+01:00||;True|2025-11-14T12:02:18.2681333+01:00||;True|2025-11-07T12:00:07.5995574+01:00||;True|2025-11-06T11:50:37.2203810+01:00||;True|2025-10-27T16:10:31.7979883+01:00||;True|2025-10-27T13:38:02.9816938+01:00||;True|2025-10-17T13:40:15.4841287+02:00||;True|2025-09-30T12:01:10.1347012+02:00||;True|2025-09-17T10:30:08.8174926+02:00||;True|2025-09-02T08:29:41.9514127+02:00||;True|2025-07-22T13:32:08.0649480+02:00||;True|2025-07-22T13:31:28.6530619+02:00||;True|2025-07-22T12:25:57.6962684+02:00||;True|2025-07-07T13:26:48.5491992+02:00||;True|2025-07-07T13:26:28.6399061+02:00||;True|2025-07-07T11:01:06.7571771+02:00||;</History>
     <LastFailureDetails />
   </PropertyGroup>
   <ItemGroup>
@@ -14,10 +14,10 @@
       <publishTime>02/22/2013 09:43:40</publishTime>
     </File>
     <File Include="bin/InformatorSAP.dll">
-      <publishTime>11/07/2025 12:00:05</publishTime>
+      <publishTime>11/24/2025 10:01:01</publishTime>
     </File>
     <File Include="bin/InformatorSAP.pdb">
-      <publishTime>11/07/2025 12:00:05</publishTime>
+      <publishTime>11/24/2025 10:01:01</publishTime>
     </File>
     <File Include="bin/Microsoft.CodeDom.Providers.DotNetCompilerPlatform.dll">
       <publishTime>09/05/2018 16:10:50</publishTime>
