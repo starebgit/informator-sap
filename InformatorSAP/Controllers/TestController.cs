@@ -14,7 +14,7 @@ namespace InformatorSAP.Controllers
             return Ok(new
             {
                 ok = true,
-                message = "InformatorSAP deploy test v1",
+                message = "InformatorSAP deploy test v2.1",
                 serverTimeUtc = DateTime.UtcNow
             });
         }
