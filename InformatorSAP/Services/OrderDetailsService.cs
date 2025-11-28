@@ -4,6 +4,7 @@ using System;
 using System.Globalization;
 using System.Collections.Generic;
 using System.Linq;
+using System.Diagnostics;
 
 namespace InformatorSAP.Services
 {
@@ -51,8 +52,12 @@ namespace InformatorSAP.Services
             if (string.IsNullOrWhiteSpace(orderNumber))
                 return null;
 
+            var sw = Stopwatch.StartNew();
+            Trace.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] GetOrderDetails START order {orderNumber}");
+
             var dest = RfcDestinationManager.GetDestination("INFORMATOR_SAP");
             var repo = dest.Repository;
+            Trace.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] After GetDestination/Repository - {sw.ElapsedMilliseconds} ms");
 
             // 1) === FIRST CALL: BAPI_PRODORD_GET_LIST ===
             var func = repo.CreateFunction("BAPI_PRODORD_GET_LIST");
@@ -71,10 +76,14 @@ namespace InformatorSAP.Services
             plantRange.SetValue("LOW", "1061");
 
             func.Invoke(dest);
+            Trace.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] After BAPI_PRODORD_GET_LIST.Invoke - {sw.ElapsedMilliseconds} ms");
 
             var header = func.GetTable("ORDER_HEADER");
             if (header == null || header.RowCount == 0)
+            {
+                Trace.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] No ORDER_HEADER rows, exiting - {sw.ElapsedMilliseconds} ms");
                 return null;
+            }
 
             var row = header[0];
 
@@ -91,8 +100,9 @@ namespace InformatorSAP.Services
             orderObjects.SetValue("OPERATIONS", "X");
 
             funcDetail.Invoke(dest);
+            Trace.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] After BAPI_PRODORD_GET_DETAIL.Invoke - {sw.ElapsedMilliseconds} ms");
 
-            // 3) === COMPONENTS -> dto.Parts (Delphi-equivalent) ===
+            // 3) === COMPONENTS ===
             var components = funcDetail.GetTable("COMPONENT");
 
             // Collect all materials (header + component materials) for bulk lookup
@@ -109,10 +119,14 @@ namespace InformatorSAP.Services
                         allMaterials.Add(compMat);
                 }
             }
+            Trace.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] After collecting allMaterials - {sw.ElapsedMilliseconds} ms (count={allMaterials.Count})");
 
             // Bulk fetch dimensions and Slovene names in a few SAP calls
-            var dimMap = GetDimensionsBulk(dest, allMaterials);       // MATNR -> GROES
+            var dimMap = GetDimensionsBulk(dest, allMaterials);          // MATNR -> GROES
+            Trace.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] After GetDimensionsBulk - {sw.ElapsedMilliseconds} ms (dimMap={dimMap.Count})");
+
             var nameSlMap = GetMaterialNamesSlBulk(dest, allMaterials); // MATNR -> MAKTX (SL)
+            Trace.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] After GetMaterialNamesSlBulk - {sw.ElapsedMilliseconds} ms (nameSlMap={nameSlMap.Count})");
 
             // Now we can build the DTO header, using bulk maps
             dimMap.TryGetValue(materialKey, out var headerDim);
@@ -128,6 +142,7 @@ namespace InformatorSAP.Services
                 Code = int.TryParse(orderNumber, out var c) ? c : 0,
                 Dimension = headerDim,
             };
+            Trace.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] After building DTO header - {sw.ElapsedMilliseconds} ms");
 
             var header2 = funcDetail.GetTable("HEADER");
             if (header2 != null && header2.RowCount > 0)
@@ -137,7 +152,9 @@ namespace InformatorSAP.Services
                 dto.StartDate = GetIsoDate(hrow, "PRODUCTION_START_DATE");
                 dto.ScheduledEnddate = GetIsoDate(hrow, "PRODUCTION_FINISH_DATE");
             }
+            Trace.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] After reading HEADER dates - {sw.ElapsedMilliseconds} ms");
 
+            // Components -> dto.Parts
             if (components != null && components.RowCount > 0)
             {
                 for (int i = 0; i < components.RowCount; i++)
@@ -177,6 +194,7 @@ namespace InformatorSAP.Services
                     dto.Parts.Add(part);
                 }
             }
+            Trace.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] After filling Parts - {sw.ElapsedMilliseconds} ms (parts={dto.Parts.Count})");
 
             // 4) === OPERATIONS -> dto.Operations (Delphi-equivalent) ===
             var operations = funcDetail.GetTable("OPERATION");
@@ -187,9 +205,6 @@ namespace InformatorSAP.Services
                 {
                     var orow = operations[i];
 
-                    // Delphi: plnnr := tabl.value[i,43];
-                    // if copy(plnnr,1,4) <> '4999' then ...
-                    // Field 43 in NCo = WORK_CENTER
                     var workCenter = orow.GetString("WORK_CENTER") ?? string.Empty;
                     if (workCenter.StartsWith("4999"))
                     {
@@ -199,19 +214,10 @@ namespace InformatorSAP.Services
 
                     var op = new OperationDto
                     {
-                        // Delphi: zapoper[ii] := tabl.value[i,11];
                         Sequence = orow.GetString("OPERATION_NUMBER"),
-
-                        // OLD NODE: label = control key (PP14)
                         Label = orow.GetString("OPR_CNTRL_KEY"),
-
-                        // OLD NODE: operationKey = work center (4013-419)
                         OperationKey = workCenter,
-
-                        // Delphi: nazOper[ii] := checkSlovar(tabl.value[i,14]);
                         Name = orow.GetString("DESCRIPTION"),
-
-                        // Delphi: potrOper[ii] := tabl.value[i,4];
                         Confirmation = orow.GetString("CONF_NO")
                     };
 
@@ -226,22 +232,23 @@ namespace InformatorSAP.Services
                             op.Operation_Machines.Add(new OperationMachineDto
                             {
                                 MachineKey = m.MachineAltKey,   // 10001812
-
                                 MachineAltKey = m.MachineKey    // 21051
                             });
                         }
                     }
                     catch (Exception ex)
-                    {                    }
+                    {
+                        Trace.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] Error in GetMachinesForOperation({workCenter}): {ex.Message}");
+                    }
 
                     dto.Operations.Add(op);
                 }
             }
+            Trace.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] After filling Operations - {sw.ElapsedMilliseconds} ms (ops={dto.Operations.Count})");
 
-
+            Trace.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] GetOrderDetails END order {orderNumber} - TOTAL {sw.ElapsedMilliseconds} ms");
             return dto;
         }
-
         public bool OrderExists(string orderNumber)
         {
             if (string.IsNullOrWhiteSpace(orderNumber))
