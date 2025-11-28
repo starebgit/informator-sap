@@ -165,13 +165,17 @@
     <Compile Include="Classes\WorkCenterDto.cs" />
     <Compile Include="Controllers\MaterialsController.cs" />
     <Compile Include="Controllers\OperationsController.cs" />
+    <Compile Include="Controllers\OrderDetailsController.cs" />
     <Compile Include="Controllers\OrdersController.cs" />
     <Compile Include="Controllers\PlanController.cs" />
     <Compile Include="Controllers\TestController.cs" />
     <Compile Include="Global.asax.cs">
       <DependentUpon>Global.asax</DependentUpon>
     </Compile>
+    <Compile Include="Models\OrderDetailsDtos.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="Services\OprStrojService.cs" />
+    <Compile Include="Services\OrderDetailsService.cs" />
     <Compile Include="Services\SapService.cs" />
   </ItemGroup>
   <ItemGroup>
@@ -191,9 +195,9 @@
     <Folder Include="App_Data\" />
     <Folder Include="Data\" />
     <Folder Include="libs\" />
-    <Folder Include="Models\" />
     <Folder Include="Views\Materials\" />
     <Folder Include="Views\Operations\" />
+    <Folder Include="Views\OrderDetails\" />
     <Folder Include="Views\Orders\" />
     <Folder Include="Views\Test\" />
   </ItemGroup>
