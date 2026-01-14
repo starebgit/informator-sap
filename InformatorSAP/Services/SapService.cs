@@ -905,9 +905,17 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
         var repo = dest.Repository;
 
         string spras = (language ?? "SL").ToUpperInvariant() == "EN" ? "E" : "5";
+        string FormatSapDats(string dats)
+        {
+            if (string.IsNullOrWhiteSpace(dats) || dats == "00000000") return "";
+            return DateTime.TryParseExact(dats, "yyyyMMdd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var dt)
+                ? dt.ToString("dd.MM.yyyy")
+                : "";
+        }
+        var gstrsByAufnr = new Dictionary<string, string>(StringComparer.Ordinal);
 
-        // ---------- helpers ----------
-        IRfcTable ReadTable(string table, int rowCount,
+                // ---------- helpers ----------
+                IRfcTable ReadTable(string table, int rowCount,
                             Action<IRfcTable> addFields, Action<IRfcTable> addOptions)
         {
             var f = repo.CreateFunction("RFC_READ_TABLE");
@@ -1006,6 +1014,7 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
                     f.Append(); f.SetValue("FIELDNAME", "AUFNR");
                     f.Append(); f.SetValue("FIELDNAME", "DISPO");
                     f.Append(); f.SetValue("FIELDNAME", "AUFPL");
+                    f.Append(); f.SetValue("FIELDNAME", "GSTRS"); // NEW: Naj. zag.
                 },
                 o => { AppendWhere(o, where); });
 
@@ -1014,18 +1023,20 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
             for (int r = 0; r < data.RowCount; r++)
             {
                 var p = data[r].GetString("WA").Split('|');
-                if (p.Length < 3) continue;
+                if (p.Length < 4) continue;
 
                 var aufnr = (p[0] ?? "").Trim().PadLeft(12, '0');
                 var dispo = (p[1] ?? "").Trim();
                 var aufpl = (p[2] ?? "").Trim();
+                var gstrs = (p[3] ?? "").Trim(); // yyyyMMdd
 
                 if (aufpl.Length == 0 || aufnr.Length == 0) continue;
 
                 if (!aufnrByAufpl.ContainsKey(aufpl)) aufnrByAufpl[aufpl] = aufnr;
                 if (!dispoByAufnr.ContainsKey(aufnr)) dispoByAufnr[aufnr] = dispo;
+                if (!gstrsByAufnr.ContainsKey(aufnr)) gstrsByAufnr[aufnr] = gstrs;
 
-                if (!orderNumbers.Contains(aufnr))
+                        if (!orderNumbers.Contains(aufnr))
                 {
                     orderNumbers.Add(aufnr);
                 }
@@ -1279,6 +1290,7 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
             _statusCalls++;
 
             var sumAfru = donos.TryGetValue(aufnr, out var v) ? v : 0m;
+            var najZag = gstrsByAufnr.TryGetValue(aufnr, out var dats) ? FormatSapDats(dats) : "";
 
             result.Add(new CooisOrderRowDto
             {
@@ -1288,7 +1300,8 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
                 Donos = sumAfru,
                 EM = unit,
                 KratkiTekstMateriala = matText,
-                StatusSistema = statusText ?? ""
+                StatusSistema = statusText ?? "",
+                NajZag = najZag
             });
 
             emitted++;

@@ -17,7 +17,7 @@ namespace InformatorSAP.Controllers
             [FromUri] string plant = "1061",
             [FromUri] string ted = null,
             [FromUri] string term = null,
-            [FromUri] int take = 200)
+            [FromUri] int take = 500)
         {
             try
             {
@@ -38,7 +38,7 @@ namespace InformatorSAP.Controllers
             [FromUri] string plant = "1061",
             [FromUri] string workCenter = null,   // e.g., 2144V201
             [FromUri] string language = "SL",
-            [FromUri] int take = 200)
+            [FromUri] int take = 500)
         {
             try
             {
