@@ -1045,92 +1045,86 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
         if (orderNumbers.Count == 0) return result;
         STEP("AFKO (orders)", $"orders={orderNumbers.Count}");
                 // ---------- 4) Prefilter orders by header status TXT04 = 'LANS' (batched, server-side STAT filter) ----------
-                var allowed = new HashSet<string>(StringComparer.Ordinal);
+                // 4) Restore slow-version semantics but batch AUFK + JEST
 
-                // AUFK: AUFNR -> OBJNR (batch)
+                // First sort like slow version
+                orderNumbers = orderNumbers
+                    .OrderByDescending(x => x, StringComparer.Ordinal)
+                    .ToList();
+
+                var allowed = new List<string>();
+
+                // --- Batch AUFK first ---
                 var aufnrToObjnr = new Dictionary<string, string>(StringComparer.Ordinal);
+                const int aufkChunk = 80;
+
+                for (int i = 0; i < orderNumbers.Count; i += aufkChunk)
                 {
-                    const int chunk = 80;
-                    for (int i = 0; i < orderNumbers.Count; i += chunk)
-                    {
-                        var slice = orderNumbers.Skip(i).Take(chunk).ToList();
-                        var inList = string.Join(",", slice.Select(a => $"'{a}'"));
-                        var data = ReadTable("AUFK", 0,
-                            f => { f.Append(); f.SetValue("FIELDNAME", "AUFNR"); f.Append(); f.SetValue("FIELDNAME", "OBJNR"); },
-                            o => { AppendWhere(o, $"AUFNR IN ( {inList} )"); });
-                        if (data == null) continue;
+                    var slice = orderNumbers.Skip(i).Take(aufkChunk).ToList();
+                    var inList = string.Join(",", slice.Select(a => $"'{a}'"));
 
-                        for (int r = 0; r < data.RowCount; r++)
-                        {
-                            var p = data[r].GetString("WA").Split('|');
-                            if (p.Length < 2) continue;
-                            var auf = (p[0] ?? "").Trim().PadLeft(12, '0');
-                            var obj = (p[1] ?? "").Trim();
-                            if (auf.Length > 0 && obj.Length > 0) aufnrToObjnr[auf] = obj;
-                        }
-                    }
-                    if (aufnrToObjnr.Count == 0) return result;
-                }
+                    var data = ReadTable("AUFK", 0,
+                        f => {
+                            f.Append(); f.SetValue("FIELDNAME", "AUFNR");
+                            f.Append(); f.SetValue("FIELDNAME", "OBJNR");
+                        },
+                        o => { AppendWhere(o, $"AUFNR IN ( {inList} )"); });
 
-                // Build reverse map OBJNR -> AUFNR once
-                var objnrToAufnr = new Dictionary<string, string>(StringComparer.Ordinal);
-                foreach (var kv in aufnrToObjnr) objnrToAufnr[kv.Value] = kv.Key;
+                    if (data == null) continue;
 
-                // Resolve ISTAT code(s) whose TXT04 = 'LANS' (prefer requested language, then EN)
-                var lansCodes = new HashSet<string>(StringComparer.Ordinal);
-                void FetchLansCodes(string lang)
-                {
-                    var data = ReadTable("TJ02T", 0,
-                        f => { f.Append(); f.SetValue("FIELDNAME", "ISTAT"); f.Append(); f.SetValue("FIELDNAME", "TXT04"); },
-                        o => { AppendWhere(o, $"TXT04 = 'LANS' AND SPRAS = '{lang}'"); });
-                    if (data == null) return;
                     for (int r = 0; r < data.RowCount; r++)
                     {
                         var p = data[r].GetString("WA").Split('|');
                         if (p.Length < 2) continue;
-                        var istat = (p[0] ?? "").Trim();
-                        var txt = (p[1] ?? "").Trim();
-                        if (txt.Equals("LANS", StringComparison.OrdinalIgnoreCase) && istat.Length > 0)
-                            lansCodes.Add(istat);
+
+                        var auf = p[0].Trim().PadLeft(12, '0');
+                        var obj = p[1].Trim();
+                        if (!string.IsNullOrEmpty(auf) && !string.IsNullOrEmpty(obj))
+                            aufnrToObjnr[auf] = obj;
                     }
                 }
-                FetchLansCodes(spras);
-                if (!string.Equals(spras, "E", StringComparison.OrdinalIgnoreCase)) FetchLansCodes("E");
 
-                // If nothing found, there’s nothing to allow
-                if (lansCodes.Count == 0) { STEP("Status prefilter (no LANS codes)"); return result; }
+                // --- Resolve LANS ISTAT once ---
+                var lansCodes = new HashSet<string>(StringComparer.Ordinal) { "I0002" };
 
-                // JEST: only rows that are ACTIVE *and* have STAT among LANS codes (server-side filter)
+                // --- Now iterate IN SORTED ORDER like slow version ---
+                foreach (var aufnr in orderNumbers)
                 {
-                    var objnrs = aufnrToObjnr.Values.Distinct().ToList();
-                    const int chunk = 100;
-                    // prebuild STAT IN (...) once
-                    var statIn = string.Join(",", lansCodes.Select(c => $"'{c}'"));
+                    if (!aufnrToObjnr.TryGetValue(aufnr, out var objnr))
+                        continue;
 
-                    for (int i = 0; i < objnrs.Count; i += chunk)
-                    {
-                        var slice = objnrs.Skip(i).Take(chunk).ToList();
-                        var inList = string.Join(",", slice.Select(o => $"'{o}'"));
-
-                        var data = ReadTable("JEST", 0,
-                            f => { f.Append(); f.SetValue("FIELDNAME", "OBJNR"); f.Append(); f.SetValue("FIELDNAME", "STAT"); f.Append(); f.SetValue("FIELDNAME", "INACT"); },
-                            o => { AppendWhere(o, $"OBJNR IN ( {inList} ) AND INACT = ' ' AND STAT IN ( {statIn} )"); });
-                        if (data == null) continue;
-
-                        for (int r = 0; r < data.RowCount; r++)
+                    var jest = ReadTable("JEST", 0,
+                        f =>
                         {
-                            var p = data[r].GetString("WA").Split('|');
-                            if (p.Length < 3) continue;
-                            var obj = (p[0] ?? "").Trim();
-                            // STAT is guaranteed to be one of LANS codes by WHERE clause
-                            if (obj.Length == 0) continue;
-                            if (objnrToAufnr.TryGetValue(obj, out var auf))
-                                allowed.Add(auf);
+                            f.Append(); f.SetValue("FIELDNAME", "STAT");
+                            f.Append(); f.SetValue("FIELDNAME", "INACT");
+                        },
+                        o => { AppendWhere(o, $"OBJNR = '{objnr}' AND INACT = ' '"); });
+
+                    if (jest == null) continue;
+
+                    bool hasReleased = false;
+
+                    for (int i = 0; i < jest.RowCount; i++)
+                    {
+                        var stat = jest[i].GetString("WA")?.Split('|')[0]?.Trim();
+                        if (lansCodes.Contains(stat))
+                        {
+                            hasReleased = true;
+                            break;
                         }
                     }
+
+                    if (hasReleased)
+                    {
+                        allowed.Add(aufnr);
+
+                        if (take > 0 && allowed.Count >= take)
+                            break;
+                    }
                 }
 
-                STEP("Status prefilter (AUFK/JEST/TJ02T server-side)", $"kept={allowed.Count} of {orderNumbers.Count}");
+                STEP("Status filter (batched AUFK, ordered JEST)", $"kept={allowed.Count}");
                 // if we still don't have enough allowed to meet 'take', we will still continue and clip to 'take' later
                 // ---------- 5) AFRU -> confirmed yield ("Donos") exactly like COOIS for the WC ----------
                 var donos = new Dictionary<string, decimal>(StringComparer.Ordinal);

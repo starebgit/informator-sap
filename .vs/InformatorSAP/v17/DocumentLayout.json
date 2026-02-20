@@ -3,15 +3,15 @@
   "WorkspaceRootPath": "C:\\Users\\stareb\\source\\repos\\InformatorSAP\\",
   "Documents": [
     {
-      "AbsoluteMoniker": "D:0:0:{88BC0965-004F-40B3-8F1B-A3AB68B3F874}|InformatorSAP\\InformatorSAP.csproj|c:\\users\\stareb\\source\\repos\\informatorsap\\informatorsap\\classes\\materialdto.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
-      "RelativeMoniker": "D:0:0:{88BC0965-004F-40B3-8F1B-A3AB68B3F874}|InformatorSAP\\InformatorSAP.csproj|solutionrelative:informatorsap\\classes\\materialdto.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
-    },
-    {
       "AbsoluteMoniker": "D:0:0:{88BC0965-004F-40B3-8F1B-A3AB68B3F874}|InformatorSAP\\InformatorSAP.csproj|c:\\users\\stareb\\source\\repos\\informatorsap\\informatorsap\\services\\sapservice.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
       "RelativeMoniker": "D:0:0:{88BC0965-004F-40B3-8F1B-A3AB68B3F874}|InformatorSAP\\InformatorSAP.csproj|solutionrelative:informatorsap\\services\\sapservice.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{88BC0965-004F-40B3-8F1B-A3AB68B3F874}|InformatorSAP\\InformatorSAP.csproj|c:\\users\\stareb\\source\\repos\\informatorsap\\informatorsap\\classes\\cooisorderrowdto.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "AbsoluteMoniker": "D:0:0:{88BC0965-004F-40B3-8F1B-A3AB68B3F874}|InformatorSAP\\InformatorSAP.csproj|C:\\Users\\stareb\\source\\repos\\InformatorSAP\\informatorsap\\classes\\materialdto.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{88BC0965-004F-40B3-8F1B-A3AB68B3F874}|InformatorSAP\\InformatorSAP.csproj|solutionrelative:informatorsap\\classes\\materialdto.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{88BC0965-004F-40B3-8F1B-A3AB68B3F874}|InformatorSAP\\InformatorSAP.csproj|C:\\Users\\stareb\\source\\repos\\InformatorSAP\\informatorsap\\classes\\cooisorderrowdto.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
       "RelativeMoniker": "D:0:0:{88BC0965-004F-40B3-8F1B-A3AB68B3F874}|InformatorSAP\\InformatorSAP.csproj|solutionrelative:informatorsap\\classes\\cooisorderrowdto.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
     {
@@ -25,12 +25,33 @@
       "VerticalTabListWidth": 256,
       "DocumentGroups": [
         {
-          "DockedHeight": 208,
-          "SelectedChildIndex": 0,
+          "DockedHeight": 244,
+          "SelectedChildIndex": 2,
           "Children": [
+            {
+              "$type": "Bookmark",
+              "Name": "ST:1:0:{d212f56b-c48a-434c-a121-1c5d80b59b9f}"
+            },
+            {
+              "$type": "Bookmark",
+              "Name": "ST:0:0:{34e76e81-ee4a-11d0-ae2e-00a0c90fffc3}"
+            },
             {
               "$type": "Document",
               "DocumentIndex": 0,
+              "Title": "SapService.cs",
+              "DocumentMoniker": "C:\\Users\\stareb\\source\\repos\\InformatorSAP\\InformatorSAP\\Services\\SapService.cs",
+              "RelativeDocumentMoniker": "InformatorSAP\\Services\\SapService.cs",
+              "ToolTip": "C:\\Users\\stareb\\source\\repos\\InformatorSAP\\InformatorSAP\\Services\\SapService.cs",
+              "RelativeToolTip": "InformatorSAP\\Services\\SapService.cs",
+              "ViewState": "AgIAADoEAAAAAAAAAAAQwGYEAABcAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-01-14T07:26:20.693Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 1,
               "Title": "MaterialDto.cs",
               "DocumentMoniker": "C:\\Users\\stareb\\source\\repos\\InformatorSAP\\InformatorSAP\\Classes\\MaterialDto.cs",
               "RelativeDocumentMoniker": "InformatorSAP\\Classes\\MaterialDto.cs",
@@ -42,10 +63,6 @@
               "EditorCaption": ""
             },
             {
-              "$type": "Bookmark",
-              "Name": "ST:0:0:{34e76e81-ee4a-11d0-ae2e-00a0c90fffc3}"
-            },
-            {
               "$type": "Document",
               "DocumentIndex": 2,
               "Title": "CooisOrderRowDto.cs",
@@ -53,22 +70,9 @@
               "RelativeDocumentMoniker": "InformatorSAP\\Classes\\CooisOrderRowDto.cs",
               "ToolTip": "C:\\Users\\stareb\\source\\repos\\InformatorSAP\\InformatorSAP\\Classes\\CooisOrderRowDto.cs",
               "RelativeToolTip": "InformatorSAP\\Classes\\CooisOrderRowDto.cs",
-              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAYAAAAiAAAAAAAAAA==",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAqwAYAAAAiAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
               "WhenOpened": "2026-01-14T08:07:50.478Z",
-              "EditorCaption": ""
-            },
-            {
-              "$type": "Document",
-              "DocumentIndex": 1,
-              "Title": "SapService.cs",
-              "DocumentMoniker": "C:\\Users\\stareb\\source\\repos\\InformatorSAP\\InformatorSAP\\Services\\SapService.cs",
-              "RelativeDocumentMoniker": "InformatorSAP\\Services\\SapService.cs",
-              "ToolTip": "C:\\Users\\stareb\\source\\repos\\InformatorSAP\\InformatorSAP\\Services\\SapService.cs",
-              "RelativeToolTip": "InformatorSAP\\Services\\SapService.cs",
-              "ViewState": "AgIAAAsFAAAAAAAAAAASwBYFAAAxAAAAAAAAAA==",
-              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-01-14T07:26:20.693Z",
               "EditorCaption": ""
             },
             {
@@ -79,7 +83,7 @@
               "RelativeDocumentMoniker": "InformatorSAP\\Controllers\\PlanController.cs",
               "ToolTip": "C:\\Users\\stareb\\source\\repos\\InformatorSAP\\InformatorSAP\\Controllers\\PlanController.cs",
               "RelativeToolTip": "InformatorSAP\\Controllers\\PlanController.cs",
-              "ViewState": "AgIAAGIAAAAAAAAAAAAiwG4AAAANAAAAAAAAAA==",
+              "ViewState": "AgIAAE4AAAAAAAAAAAAAAHgAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
               "WhenOpened": "2025-12-01T13:55:23.281Z",
               "EditorCaption": ""
@@ -87,7 +91,7 @@
           ]
         },
         {
-          "DockedHeight": 129,
+          "DockedHeight": 196,
           "SelectedChildIndex": -1,
           "Children": [
             {
