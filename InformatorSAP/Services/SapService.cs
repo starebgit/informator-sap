@@ -1529,26 +1529,63 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
             if (longTextByAufnr.TryGetValue(aufnr, out var cached)) return cached;
 
             var order12 = aufnr.Trim().PadLeft(12, '0');
+            var orderNoZeros = order12.TrimStart('0');
             var client = dest.SystemAttributes.Client ?? "";
-            var tdobject = "AUFK";
-            var tdid = "KOPF";
-            var tdspras = "5";
-            var tdname = client + order12;
+            var aufpl = aufplByAufnr.TryGetValue(order12, out var apl) ? apl : "";
 
-            System.Diagnostics.Trace.WriteLine(
-                $"[GetOrdersByWorkCenter] LongText TRY order={aufnr} OBJECT={tdobject} ID={tdid} NAME={tdname} LANG={tdspras}");
-
-            var txt = ReadLongText(tdobject, tdid, tdname, tdspras);
-            if (!string.IsNullOrWhiteSpace(txt))
+            var candidates = new List<Tuple<string, string, string, string, string>>();
+            void AddCandidate(string obj, string id, string name, string lang, string source)
             {
+                if (string.IsNullOrWhiteSpace(obj) || string.IsNullOrWhiteSpace(id) ||
+                    string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(lang))
+                    return;
+                candidates.Add(Tuple.Create(obj.Trim(), id.Trim(), name.Trim(), lang.Trim(), source));
+            }
+
+            // exact key from CO03/SE37 first
+            AddCandidate("AUFK", "KOPF", client + order12, "5", "exact");
+            // same object/id with additional common variants
+            foreach (var lang in new[] { spras, "5", "E" }.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                AddCandidate("AUFK", "KOPF", client + order12, lang, "standard");
+                AddCandidate("AUFK", "KOPF", order12, lang, "standard");
+                if (!string.IsNullOrWhiteSpace(orderNoZeros))
+                {
+                    AddCandidate("AUFK", "KOPF", client + orderNoZeros, lang, "standard");
+                    AddCandidate("AUFK", "KOPF", orderNoZeros, lang, "standard");
+                }
+            }
+
+            // discover customizing-specific text keys from STXH
+            foreach (var t in GetTextTriplesFromStxh(order12, aufpl))
+                AddCandidate(t.Item1, t.Item2, t.Item4, t.Item3, "stxh");
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var c in candidates)
+            {
+                var key = $"{c.Item1}|{c.Item2}|{c.Item3}|{c.Item4}";
+                if (!seen.Add(key)) continue;
+
                 System.Diagnostics.Trace.WriteLine(
-                    $"[GetOrdersByWorkCenter] LongText HIT order={aufnr} OBJECT={tdobject} ID={tdid} NAME={tdname} LANG={tdspras}");
+                    $"[GetOrdersByWorkCenter] LongText TRY order={aufnr} source={c.Item5} OBJECT={c.Item1} ID={c.Item2} NAME={c.Item3} LANG={c.Item4}");
+
+                var txt = ReadLongText(c.Item1, c.Item2, c.Item3, c.Item4);
+                if (string.IsNullOrWhiteSpace(txt)) continue;
+
+                System.Diagnostics.Trace.WriteLine(
+                    $"[GetOrdersByWorkCenter] LongText HIT order={aufnr} source={c.Item5} OBJECT={c.Item1} ID={c.Item2} NAME={c.Item3} LANG={c.Item4}");
                 longTextByAufnr[aufnr] = txt;
                 return txt;
             }
 
-            System.Diagnostics.Trace.WriteLine(
-                $"[GetOrdersByWorkCenter] LongText MISS order={aufnr} OBJECT={tdobject} ID={tdid} NAME={tdname} LANG={tdspras}");
+            var bapiTxt = ReadLongTextViaBapiProdordGetDetail(order12);
+            if (!string.IsNullOrWhiteSpace(bapiTxt))
+            {
+                longTextByAufnr[aufnr] = bapiTxt;
+                return bapiTxt;
+            }
+
+            System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] LongText MISS order={aufnr} all strategies exhausted");
 
             longTextByAufnr[aufnr] = "";
             return "";
