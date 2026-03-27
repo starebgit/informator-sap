@@ -1511,40 +1511,81 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
             AddCandidate(order12);
             AddCandidate(orderNoZeros);
 
-            string TryWay(string way, string obj, string id, string lang, string name)
+            string TryWay(string way, string obj, string id, IEnumerable<string> names, IEnumerable<string> langs)
             {
-                var txt = ReadLongText(obj, id, name, lang);
-                if (!string.IsNullOrWhiteSpace(txt))
+                foreach (var lang in langs)
                 {
-                    System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] LongText HIT order={aufnr} way={way} obj={obj} id={id} lang={lang} name={name}");
-                    longTextByAufnr[aufnr] = txt;
-                    return txt;
+                    foreach (var name in names.Where(n => !string.IsNullOrWhiteSpace(n)).Distinct())
+                    {
+                        var txt = ReadLongText(obj, id, name, lang);
+                        if (!string.IsNullOrWhiteSpace(txt))
+                        {
+                            System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] LongText HIT order={aufnr} way={way} obj={obj} id={id} lang={lang} name={name}");
+                            longTextByAufnr[aufnr] = txt;
+                            return txt;
+                        }
+                    }
                 }
                 return null;
             }
 
-            // 10 explicit strategies (requested):
-            var wayHits = new[]
-            {
-                Tuple.Create("way01_AUFK_KOPF_5_order12", "AUFK", "KOPF", "5", order12),
-                Tuple.Create("way02_AUFK_KOPF_S_order12", "AUFK", "KOPF", "S", order12),
-                Tuple.Create("way03_AUFK_KOPF_E_order12", "AUFK", "KOPF", "E", order12),
-                Tuple.Create("way04_AUFK_AVOT_5_order12", "AUFK", "AVOT", "5", order12),
-                Tuple.Create("way05_AUFK_AVOT_S_order12", "AUFK", "AVOT", "S", order12),
-                Tuple.Create("way06_AUFK_AVOT_E_order12", "AUFK", "AVOT", "E", order12),
-                Tuple.Create("way07_AUFK_KOPF_5_orderNoZeros", "AUFK", "KOPF", "5", orderNoZeros),
-                Tuple.Create("way08_AUFK_KOPF_S_orderNoZeros", "AUFK", "KOPF", "S", orderNoZeros),
-                Tuple.Create("way09_AUFK_KOPF_E_orderNoZeros", "AUFK", "KOPF", "E", orderNoZeros),
-                Tuple.Create("way10_AUFK_AVOT_5_orderNoZeros", "AUFK", "AVOT", "5", orderNoZeros)
-            };
+            var langs = new[] { "5", "S", "E", "D" };
+            var withClient = !string.IsNullOrWhiteSpace(client) ? client + order12 : null;
 
-            foreach (var w in wayHits)
+            // 10 distinct fallback ways:
+            // way01 = BAPI_PRODORD_GET_DETAIL tables (already attempted above)
+            // way02 = STXH triples using order fragment only
+            var stxhOrderOnly = GetTextTriplesFromStxh(order12, null).ToList();
+            foreach (var t in stxhOrderOnly)
             {
-                if (string.IsNullOrWhiteSpace(w.Item5)) continue;
-                var hit = TryWay(w.Item1, w.Item2, w.Item3, w.Item4, w.Item5);
-                if (!string.IsNullOrWhiteSpace(hit)) return hit;
+                var txt = ReadLongText(t.Item1, t.Item2, t.Item4, t.Item3);
+                if (!string.IsNullOrWhiteSpace(txt))
+                {
+                    System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] LongText HIT order={aufnr} way=way02_STXH_ORDER_ONLY obj={t.Item1} id={t.Item2} lang={t.Item3} name={t.Item4}");
+                    longTextByAufnr[aufnr] = txt;
+                    return txt;
+                }
             }
-            System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] LongText no-hit on first 10 ways order={aufnr}");
+
+            // way03 = STXH triples using aufpl fragment only
+            if (!string.IsNullOrWhiteSpace(aufpl))
+            {
+                var stxhAufplOnly = GetTextTriplesFromStxh("", aufpl).ToList();
+                foreach (var t in stxhAufplOnly)
+                {
+                    var txt = ReadLongText(t.Item1, t.Item2, t.Item4, t.Item3);
+                    if (!string.IsNullOrWhiteSpace(txt))
+                    {
+                        System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] LongText HIT order={aufnr} way=way03_STXH_AUFPL_ONLY obj={t.Item1} id={t.Item2} lang={t.Item3} name={t.Item4}");
+                        longTextByAufnr[aufnr] = txt;
+                        return txt;
+                    }
+                }
+            }
+
+            // way04
+            var hit04 = TryWay("way04_AUFK_KOPF_CLIENT+AUFNR", "AUFK", "KOPF", new[] { withClient }, langs);
+            if (!string.IsNullOrWhiteSpace(hit04)) return hit04;
+            // way05
+            var hit05 = TryWay("way05_AUFK_KOPF_AUFNR12", "AUFK", "KOPF", new[] { order12 }, langs);
+            if (!string.IsNullOrWhiteSpace(hit05)) return hit05;
+            // way06
+            var hit06 = TryWay("way06_AUFK_KOPF_AUFNR", "AUFK", "KOPF", new[] { orderNoZeros }, langs);
+            if (!string.IsNullOrWhiteSpace(hit06)) return hit06;
+            // way07
+            var hit07 = TryWay("way07_AUFK_LTXT_CLIENT+AUFNR", "AUFK", "LTXT", new[] { withClient, order12 }, langs);
+            if (!string.IsNullOrWhiteSpace(hit07)) return hit07;
+            // way08
+            var hit08 = TryWay("way08_AUFK_AVOT_CLIENT+AUFNR", "AUFK", "AVOT", new[] { withClient, order12, orderNoZeros }, langs);
+            if (!string.IsNullOrWhiteSpace(hit08)) return hit08;
+            // way09
+            var hit09 = TryWay("way09_AFKO_KOPF_AUFNR12", "AFKO", "KOPF", new[] { order12, withClient }, langs);
+            if (!string.IsNullOrWhiteSpace(hit09)) return hit09;
+            // way10
+            var hit10 = TryWay("way10_COAS_KOPF_AUFNR12", "COAS", "KOPF", new[] { order12, withClient }, langs);
+            if (!string.IsNullOrWhiteSpace(hit10)) return hit10;
+
+            System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] LongText no-hit across 10 distinct ways order={aufnr}");
 
             if (!string.IsNullOrWhiteSpace(aufpl))
             {
