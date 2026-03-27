@@ -1511,6 +1511,41 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
             AddCandidate(order12);
             AddCandidate(orderNoZeros);
 
+            string TryWay(string way, string obj, string id, string lang, string name)
+            {
+                var txt = ReadLongText(obj, id, name, lang);
+                if (!string.IsNullOrWhiteSpace(txt))
+                {
+                    System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] LongText HIT order={aufnr} way={way} obj={obj} id={id} lang={lang} name={name}");
+                    longTextByAufnr[aufnr] = txt;
+                    return txt;
+                }
+                return null;
+            }
+
+            // 10 explicit strategies (requested):
+            var wayHits = new[]
+            {
+                Tuple.Create("way01_AUFK_KOPF_5_order12", "AUFK", "KOPF", "5", order12),
+                Tuple.Create("way02_AUFK_KOPF_S_order12", "AUFK", "KOPF", "S", order12),
+                Tuple.Create("way03_AUFK_KOPF_E_order12", "AUFK", "KOPF", "E", order12),
+                Tuple.Create("way04_AUFK_AVOT_5_order12", "AUFK", "AVOT", "5", order12),
+                Tuple.Create("way05_AUFK_AVOT_S_order12", "AUFK", "AVOT", "S", order12),
+                Tuple.Create("way06_AUFK_AVOT_E_order12", "AUFK", "AVOT", "E", order12),
+                Tuple.Create("way07_AUFK_KOPF_5_orderNoZeros", "AUFK", "KOPF", "5", orderNoZeros),
+                Tuple.Create("way08_AUFK_KOPF_S_orderNoZeros", "AUFK", "KOPF", "S", orderNoZeros),
+                Tuple.Create("way09_AUFK_KOPF_E_orderNoZeros", "AUFK", "KOPF", "E", orderNoZeros),
+                Tuple.Create("way10_AUFK_AVOT_5_orderNoZeros", "AUFK", "AVOT", "5", orderNoZeros)
+            };
+
+            foreach (var w in wayHits)
+            {
+                if (string.IsNullOrWhiteSpace(w.Item5)) continue;
+                var hit = TryWay(w.Item1, w.Item2, w.Item3, w.Item4, w.Item5);
+                if (!string.IsNullOrWhiteSpace(hit)) return hit;
+            }
+            System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] LongText no-hit on first 10 ways order={aufnr}");
+
             if (!string.IsNullOrWhiteSpace(aufpl))
             {
                 var ap10 = aufpl.Trim().PadLeft(10, '0');
