@@ -1349,20 +1349,22 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
                 AddCandidate($"{client}{ap10}00000002");
                 AddCandidate($"{client}{ap10}00000003");
                 AddCandidate($"{client}{ap10}00000004");
-
-                foreach (var n in GetTextNamesFromStxh("AUFK", "AVOT", "5", order12, aufpl)) AddCandidate(n);
-                foreach (var n in GetTextNamesFromStxh("AUFK", "AVOT", "E", order12, aufpl)) AddCandidate(n);
             }
-            else
+
+            foreach (var lang in new[] { "5", "S", "E" })
             {
-                foreach (var n in GetTextNamesFromStxh("AUFK", "AVOT", "5", order12, null)) AddCandidate(n);
-                foreach (var n in GetTextNamesFromStxh("AUFK", "AVOT", "E", order12, null)) AddCandidate(n);
+                foreach (var id in new[] { "KOPF", "AVOT" })
+                {
+                    foreach (var n in GetTextNamesFromStxh("AUFK", id, lang, order12, null)) AddCandidate(n);
+                    if (!string.IsNullOrWhiteSpace(aufpl))
+                        foreach (var n in GetTextNamesFromStxh("AUFK", id, lang, order12, aufpl)) AddCandidate(n);
+                }
             }
 
             var tried = new List<Tuple<string, string, string>>();
-            foreach (var lang in new[] { "5", "E" })
+            foreach (var lang in new[] { "5", "S", "E" })
             {
-                foreach (var id in new[] { "AVOT", "KOPF" })
+                foreach (var id in new[] { "KOPF", "AVOT" })
                 {
                     foreach (var name in nameCandidates)
                     {
@@ -1374,6 +1376,7 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
                         if (txt == null) continue;
                         if (!string.IsNullOrWhiteSpace(txt))
                         {
+                            System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] LongText HIT order={aufnr} obj=AUFK id={id} lang={lang} name={name}");
                             longTextByAufnr[aufnr] = txt;
                             return txt;
                         }
@@ -1381,6 +1384,7 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
                 }
             }
 
+            System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] LongText MISS order={aufnr}");
             longTextByAufnr[aufnr] = "";
             return "";
         }
