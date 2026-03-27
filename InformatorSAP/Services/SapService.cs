@@ -1040,6 +1040,10 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
                     IRfcTable t;
                     try { t = f.GetTable(tName); }
                     catch { t = null; }
+
+                    var rc = t == null ? -1 : t.RowCount;
+                    System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] BAPI text table check order={order12} table={tName} rows={rc}");
+
                     if (t == null || t.RowCount == 0) continue;
 
                     var sb = new StringBuilder();
@@ -1086,6 +1090,8 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
                         return txt;
                     }
                 }
+
+                System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] BAPI_PRODORD_GET_DETAIL no usable text rows for order={order12}");
             }
             catch (Exception ex)
             {
@@ -1521,6 +1527,7 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
                         foreach (var n in GetTextNamesFromStxh("AUFK", id, lang, order12, aufpl)) AddCandidate(n);
                 }
             }
+            System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] LongText candidates order={aufnr} count={nameCandidates.Count}");
 
             var tried = new List<Tuple<string, string, string>>();
 
@@ -1528,6 +1535,7 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
                 .OrderBy(t => t.Item2 == "5" ? 0 : t.Item2 == "S" ? 1 : t.Item2 == "E" ? 2 : 3)
                 .ThenBy(t => t.Item1 == "KOPF" ? 0 : t.Item1 == "AVOT" ? 1 : 2)
                 .ToList();
+            System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] STXH triples order={aufnr} count={stxhTriples.Count}");
 
             foreach (var t in stxhTriples)
             {
