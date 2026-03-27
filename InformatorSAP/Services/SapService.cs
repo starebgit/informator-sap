@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Configuration;
 using System.Globalization;
 using System.Linq;
+using System.Text;
 using System.Web.Http.Results;
 using InformatorSAP.Classes;
 using SAP.Middleware.Connector;
@@ -947,6 +948,72 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
             return dv;
         }
 
+        string ReadLongText(string textObject, string textId, string textName, string sapLanguage)
+        {
+            if (string.IsNullOrWhiteSpace(textObject) || string.IsNullOrWhiteSpace(textId) ||
+                string.IsNullOrWhiteSpace(textName) || string.IsNullOrWhiteSpace(sapLanguage))
+                return null;
+
+            try
+            {
+                var fm = repo.CreateFunction("READ_TEXT");
+                fm.SetValue("CLIENT", dest.SystemAttributes.Client);
+                fm.SetValue("OBJECT", textObject);
+                fm.SetValue("ID", textId);
+                fm.SetValue("NAME", textName);
+                fm.SetValue("LANGUAGE", sapLanguage);
+                fm.Invoke(dest);
+
+                var lines = fm.GetTable("LINES");
+                if (lines == null || lines.RowCount == 0) return "";
+
+                var sb = new StringBuilder();
+                for (int i = 0; i < lines.RowCount; i++)
+                {
+                    var l = lines[i].GetString("TDLINE") ?? "";
+                    l = l.TrimEnd();
+                    if (l.Length == 0) continue;
+                    if (sb.Length > 0) sb.Append("\n");
+                    sb.Append(l);
+                }
+                return sb.ToString().Trim();
+            }
+            catch { return null; }
+        }
+
+        IEnumerable<string> GetTextNamesFromStxh(string textObject, string textId, string sapLanguage, string aufnr12, string aufpl)
+        {
+            var names = new List<string>();
+            var whereParts = new List<string>
+            {
+                $"TDOBJECT = '{textObject}'",
+                $"AND TDID = '{textId}'",
+                $"AND TDSPRAS = '{sapLanguage}'"
+            };
+
+            if (!string.IsNullOrWhiteSpace(aufpl))
+            {
+                whereParts.Add($"AND TDNAME LIKE '%{aufpl.Trim()}%'");
+            }
+            else
+            {
+                whereParts.Add($"AND TDNAME LIKE '%{aufnr12.TrimStart('0')}%'");
+            }
+
+            var data = ReadTable("STXH", 10,
+                f => { f.Append(); f.SetValue("FIELDNAME", "TDNAME"); },
+                o => { AppendWhere(o, string.Join(" ", whereParts)); });
+
+            if (data == null) return names;
+
+            for (int i = 0; i < data.RowCount; i++)
+            {
+                var n = data[i].GetString("WA")?.Split('|')[0]?.Trim();
+                if (!string.IsNullOrWhiteSpace(n) && !names.Contains(n)) names.Add(n);
+            }
+            return names;
+        }
+
         // ---------- 1) CRHD -> OBJID (work center internal id) ----------
         string objid = null;
         {
@@ -996,6 +1063,7 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
         orderNumbers = new List<string>();
         var aufnrByAufpl = new Dictionary<string, string>(StringComparer.Ordinal);
         var dispoByAufnr = new Dictionary<string, string>(StringComparer.Ordinal);
+        var aufplByAufnr = new Dictionary<string, string>(StringComparer.Ordinal);
 
         var aufplList = afvcOps.Select(x => x.Item1).Distinct().ToList();
         const int AFKO_CHUNK = 120;
@@ -1034,6 +1102,7 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
 
                 if (!aufnrByAufpl.ContainsKey(aufpl)) aufnrByAufpl[aufpl] = aufnr;
                 if (!dispoByAufnr.ContainsKey(aufnr)) dispoByAufnr[aufnr] = dispo;
+                if (!aufplByAufnr.ContainsKey(aufnr)) aufplByAufnr[aufnr] = aufpl;
                 if (!gstrsByAufnr.ContainsKey(aufnr)) gstrsByAufnr[aufnr] = gstrs;
 
                         if (!orderNumbers.Contains(aufnr))
@@ -1253,6 +1322,69 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
         }
         STEP("MAKT batch", $"materials={materials.Count}; texts={mtexts.Count}");
 
+        var longTextByAufnr = new Dictionary<string, string>(StringComparer.Ordinal);
+        string ResolveLongText(string aufnr)
+        {
+            if (string.IsNullOrWhiteSpace(aufnr)) return "";
+            if (longTextByAufnr.TryGetValue(aufnr, out var cached)) return cached;
+
+            var order12 = aufnr.Trim().PadLeft(12, '0');
+            var orderNoZeros = order12.TrimStart('0');
+            aufplByAufnr.TryGetValue(order12, out var aufpl);
+            var client = dest.SystemAttributes.Client ?? "";
+
+            var nameCandidates = new List<string>();
+            void AddCandidate(string n)
+            {
+                if (!string.IsNullOrWhiteSpace(n) && !nameCandidates.Contains(n)) nameCandidates.Add(n);
+            }
+
+            AddCandidate(order12);
+            AddCandidate(orderNoZeros);
+
+            if (!string.IsNullOrWhiteSpace(aufpl))
+            {
+                var ap10 = aufpl.Trim().PadLeft(10, '0');
+                AddCandidate($"{client}{ap10}00000001");
+                AddCandidate($"{client}{ap10}00000002");
+                AddCandidate($"{client}{ap10}00000003");
+                AddCandidate($"{client}{ap10}00000004");
+
+                foreach (var n in GetTextNamesFromStxh("AUFK", "AVOT", "5", order12, aufpl)) AddCandidate(n);
+                foreach (var n in GetTextNamesFromStxh("AUFK", "AVOT", "E", order12, aufpl)) AddCandidate(n);
+            }
+            else
+            {
+                foreach (var n in GetTextNamesFromStxh("AUFK", "AVOT", "5", order12, null)) AddCandidate(n);
+                foreach (var n in GetTextNamesFromStxh("AUFK", "AVOT", "E", order12, null)) AddCandidate(n);
+            }
+
+            var tried = new List<Tuple<string, string, string>>();
+            foreach (var lang in new[] { "5", "E" })
+            {
+                foreach (var id in new[] { "AVOT", "KOPF" })
+                {
+                    foreach (var name in nameCandidates)
+                    {
+                        var key = Tuple.Create(lang, id, name);
+                        if (tried.Contains(key)) continue;
+                        tried.Add(key);
+
+                        var txt = ReadLongText("AUFK", id, name, lang);
+                        if (txt == null) continue;
+                        if (!string.IsNullOrWhiteSpace(txt))
+                        {
+                            longTextByAufnr[aufnr] = txt;
+                            return txt;
+                        }
+                    }
+                }
+            }
+
+            longTextByAufnr[aufnr] = "";
+            return "";
+        }
+
         // ---------- 8) Build result rows ----------
         // Emit ONLY up to 'take'; if fewer available, emit all available.
         int emitted = 0;
@@ -1285,6 +1417,7 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
 
             var sumAfru = donos.TryGetValue(aufnr, out var v) ? v : 0m;
             var najZag = gstrsByAufnr.TryGetValue(aufnr, out var dats) ? FormatSapDats(dats) : "";
+            var dolgiTekst = ResolveLongText(aufnr);
 
             result.Add(new CooisOrderRowDto
             {
@@ -1294,6 +1427,7 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
                 Donos = sumAfru,
                 EM = unit,
                 KratkiTekstMateriala = matText,
+                DolgiTekst = dolgiTekst,
                 StatusSistema = statusText ?? "",
                 NajZag = najZag
             });
