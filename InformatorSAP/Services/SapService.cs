@@ -979,22 +979,60 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
 
                 fm.Invoke(dest);
 
-                IRfcTable lines;
-                try { lines = fm.GetTable("LINES"); }
-                catch { lines = null; }
-
-                if (lines == null || lines.RowCount == 0) return "";
-
-                var sb = new StringBuilder();
-                for (int i = 0; i < lines.RowCount; i++)
+                string ReadTableText(string tableName)
                 {
-                    var l = lines[i].GetString("TDLINE") ?? "";
-                    l = l.TrimEnd();
-                    if (l.Length == 0) continue;
-                    if (sb.Length > 0) sb.Append("\n");
-                    sb.Append(l);
+                    IRfcTable t;
+                    try { t = fm.GetTable(tableName); }
+                    catch { return null; }
+                    if (t == null || t.RowCount == 0) return null;
+
+                    var sbLocal = new StringBuilder();
+                    var fields = new[] { "TDLINE", "TEXT_LINE", "LINE", "TEXT", "TLINE" };
+
+                    for (int i = 0; i < t.RowCount; i++)
+                    {
+                        string line = null;
+                        foreach (var fn in fields)
+                        {
+                            try
+                            {
+                                line = t[i].GetString(fn);
+                                if (!string.IsNullOrWhiteSpace(line)) break;
+                            }
+                            catch { }
+                        }
+
+                        if (string.IsNullOrWhiteSpace(line))
+                        {
+                            try
+                            {
+                                for (int c = 0; c < t[i].Count; c++)
+                                {
+                                    var val = t[i].GetString(c);
+                                    if (!string.IsNullOrWhiteSpace(val)) { line = val; break; }
+                                }
+                            }
+                            catch { }
+                        }
+
+                        if (string.IsNullOrWhiteSpace(line)) continue;
+                        line = line.TrimEnd();
+                        if (sbLocal.Length > 0) sbLocal.Append("\n");
+                        sbLocal.Append(line);
+                    }
+
+                    var txt = sbLocal.ToString().Trim();
+                    return string.IsNullOrWhiteSpace(txt) ? null : txt;
                 }
-                return sb.ToString().Trim();
+
+                foreach (var tName in new[] { "LINES", "ET_LINES", "TEXT_LINES", "E_TLINE" })
+                {
+                    var txt = ReadTableText(tName);
+                    if (!string.IsNullOrWhiteSpace(txt)) return txt;
+                }
+
+                System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] READ_TEXT no lines obj={textObject} id={textId} lang={sapLanguage} name={textName}");
+                return "";
             }
             catch (Exception ex)
             {
