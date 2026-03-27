@@ -1134,9 +1134,9 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
             return names;
         }
 
-        IEnumerable<Tuple<string, string, string>> GetTextTriplesFromStxh(string aufnr12, string aufpl)
+        IEnumerable<Tuple<string, string, string, string>> GetTextTriplesFromStxh(string aufnr12, string aufpl)
         {
-            var triples = new List<Tuple<string, string, string>>();
+            var triples = new List<Tuple<string, string, string, string>>();
             var fragments = new List<string>();
 
             var orderNoZeros = (aufnr12 ?? "").Trim().TrimStart('0');
@@ -1146,11 +1146,12 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
             if (fragments.Count == 0) return triples;
 
             var likes = string.Join(" OR ", fragments.Select(f => $"TDNAME LIKE '%{f.Replace("'", "''")}%'").Distinct());
-            var where = $"TDOBJECT = 'AUFK' AND ( {likes} )";
+            var where = $"( {likes} )";
 
             var data = ReadTable("STXH", 30,
                 f =>
                 {
+                    f.Append(); f.SetValue("FIELDNAME", "TDOBJECT");
                     f.Append(); f.SetValue("FIELDNAME", "TDID");
                     f.Append(); f.SetValue("FIELDNAME", "TDSPRAS");
                     f.Append(); f.SetValue("FIELDNAME", "TDNAME");
@@ -1162,12 +1163,13 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
             for (int i = 0; i < data.RowCount; i++)
             {
                 var p = (data[i].GetString("WA") ?? "").Split('|');
-                if (p.Length < 3) continue;
-                var id = (p[0] ?? "").Trim();
-                var lang = (p[1] ?? "").Trim();
-                var name = (p[2] ?? "").Trim();
-                if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(lang) || string.IsNullOrWhiteSpace(name)) continue;
-                var t = Tuple.Create(id, lang, name);
+                if (p.Length < 4) continue;
+                var obj = (p[0] ?? "").Trim();
+                var id = (p[1] ?? "").Trim();
+                var lang = (p[2] ?? "").Trim();
+                var name = (p[3] ?? "").Trim();
+                if (string.IsNullOrWhiteSpace(obj) || string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(lang) || string.IsNullOrWhiteSpace(name)) continue;
+                var t = Tuple.Create(obj, id, lang, name);
                 if (!triples.Contains(t)) triples.Add(t);
             }
 
@@ -1532,22 +1534,23 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
             var tried = new List<Tuple<string, string, string>>();
 
             var stxhTriples = GetTextTriplesFromStxh(order12, aufpl)
-                .OrderBy(t => t.Item2 == "5" ? 0 : t.Item2 == "S" ? 1 : t.Item2 == "E" ? 2 : 3)
-                .ThenBy(t => t.Item1 == "KOPF" ? 0 : t.Item1 == "AVOT" ? 1 : 2)
+                 .OrderBy(t => t.Item3 == "5" ? 0 : t.Item3 == "S" ? 1 : t.Item3 == "E" ? 2 : 3)
+                .ThenBy(t => t.Item1 == "AUFK" ? 0 : t.Item1 == "AFKO" ? 1 : 2)
+                .ThenBy(t => t.Item2 == "KOPF" ? 0 : t.Item2 == "AVOT" ? 1 : 2)
                 .ToList();
             System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] STXH triples order={aufnr} count={stxhTriples.Count}");
 
             foreach (var t in stxhTriples)
             {
-                var key = Tuple.Create(t.Item2, t.Item1, t.Item3);
+                var key = Tuple.Create(t.Item3, t.Item2, t.Item4);
                 if (tried.Contains(key)) continue;
                 tried.Add(key);
 
-                var txt = ReadLongText("AUFK", t.Item1, t.Item3, t.Item2);
+                var txt = ReadLongText(t.Item1, t.Item2, t.Item4, t.Item3);
                 if (txt == null) continue;
                 if (!string.IsNullOrWhiteSpace(txt))
                 {
-                    System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] LongText HIT order={aufnr} obj=AUFK id={t.Item1} lang={t.Item2} name={t.Item3} source=STXH");
+                    System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] LongText HIT order={aufnr} obj={t.Item1} id={t.Item2} lang={t.Item3} name={t.Item4} source=STXH");
                     longTextByAufnr[aufnr] = txt;
                     return txt;
                 }
