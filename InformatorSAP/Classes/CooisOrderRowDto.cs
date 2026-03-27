@@ -6,6 +6,7 @@
     public decimal Donos { get; set; }
     public string EM { get; set; }
     public string KratkiTekstMateriala { get; set; }
+    public string DolgiTekst { get; set; }
 
     // Renamed: combined user/system status text (e.g. "DPOT LANS PMEJ")
     public string StatusSistema { get; set; }
