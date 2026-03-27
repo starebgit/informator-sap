@@ -956,15 +956,33 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
 
             try
             {
-                var fm = repo.CreateFunction("READ_TEXT");
-                fm.SetValue("CLIENT", dest.SystemAttributes.Client);
-                fm.SetValue("OBJECT", textObject);
-                fm.SetValue("ID", textId);
-                fm.SetValue("NAME", textName);
-                fm.SetValue("LANGUAGE", sapLanguage);
+                IRfcFunction fm;
+                try
+                {
+                    fm = repo.CreateFunction("RFC_READ_TEXT");
+                }
+                catch
+                {
+                    fm = repo.CreateFunction("READ_TEXT");
+                }
+
+                void SetIfExists(string name, object value)
+                {
+                    try { fm.SetValue(name, value); } catch { }
+                }
+
+                SetIfExists("CLIENT", dest.SystemAttributes.Client);
+                SetIfExists("OBJECT", textObject);
+                SetIfExists("ID", textId);
+                SetIfExists("NAME", textName);
+                SetIfExists("LANGUAGE", sapLanguage);
+
                 fm.Invoke(dest);
 
-                var lines = fm.GetTable("LINES");
+                IRfcTable lines;
+                try { lines = fm.GetTable("LINES"); }
+                catch { lines = null; }
+
                 if (lines == null || lines.RowCount == 0) return "";
 
                 var sb = new StringBuilder();
