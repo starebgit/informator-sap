@@ -959,11 +959,11 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
                 IRfcFunction fm;
                 try
                 {
-                    fm = repo.CreateFunction("RFC_READ_TEXT");
+                    fm = repo.CreateFunction("READ_TEXT");
                 }
                 catch
                 {
-                    fm = repo.CreateFunction("READ_TEXT");
+                    fm = repo.CreateFunction("RFC_READ_TEXT");
                 }
 
                 void SetIfExists(string name, object value)
@@ -1529,170 +1529,27 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
             if (longTextByAufnr.TryGetValue(aufnr, out var cached)) return cached;
 
             var order12 = aufnr.Trim().PadLeft(12, '0');
-            var orderNoZeros = order12.TrimStart('0');
-            aufplByAufnr.TryGetValue(order12, out var aufpl);
             var client = dest.SystemAttributes.Client ?? "";
+            var tdobject = "AUFK";
+            var tdid = "KOPF";
+            var tdspras = "5";
+            var tdname = client + order12;
 
-            var bapiText = ReadLongTextViaBapiProdordGetDetail(order12);
-            if (!string.IsNullOrWhiteSpace(bapiText))
+            System.Diagnostics.Trace.WriteLine(
+                $"[GetOrdersByWorkCenter] LongText TRY order={aufnr} OBJECT={tdobject} ID={tdid} NAME={tdname} LANG={tdspras}");
+
+            var txt = ReadLongText(tdobject, tdid, tdname, tdspras);
+            if (!string.IsNullOrWhiteSpace(txt))
             {
-                longTextByAufnr[aufnr] = bapiText;
-                return bapiText;
+                System.Diagnostics.Trace.WriteLine(
+                    $"[GetOrdersByWorkCenter] LongText HIT order={aufnr} OBJECT={tdobject} ID={tdid} NAME={tdname} LANG={tdspras}");
+                longTextByAufnr[aufnr] = txt;
+                return txt;
             }
 
-            var nameCandidates = new List<string>();
-            void AddCandidate(string n)
-            {
-                if (!string.IsNullOrWhiteSpace(n) && !nameCandidates.Contains(n)) nameCandidates.Add(n);
-            }
+            System.Diagnostics.Trace.WriteLine(
+                $"[GetOrdersByWorkCenter] LongText MISS order={aufnr} OBJECT={tdobject} ID={tdid} NAME={tdname} LANG={tdspras}");
 
-            AddCandidate(order12);
-            AddCandidate(orderNoZeros);
-
-            string TryWay(string way, string obj, string id, IEnumerable<string> names, IEnumerable<string> langs)
-            {
-                foreach (var lang in langs)
-                {
-                    foreach (var name in names.Where(n => !string.IsNullOrWhiteSpace(n)).Distinct())
-                    {
-                        var txt = ReadLongText(obj, id, name, lang);
-                        if (!string.IsNullOrWhiteSpace(txt))
-                        {
-                            System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] LongText HIT order={aufnr} way={way} obj={obj} id={id} lang={lang} name={name}");
-                            longTextByAufnr[aufnr] = txt;
-                            return txt;
-                        }
-                    }
-                }
-                return null;
-            }
-
-            var langs = new[] { "5", "S", "E", "D" };
-            var withClient = !string.IsNullOrWhiteSpace(client) ? client + order12 : null;
-
-            // 10 distinct fallback ways:
-            // way01 = BAPI_PRODORD_GET_DETAIL tables (already attempted above)
-            // way02 = STXH triples using order fragment only
-            var stxhOrderOnly = GetTextTriplesFromStxh(order12, null).ToList();
-            foreach (var t in stxhOrderOnly)
-            {
-                var txt = ReadLongText(t.Item1, t.Item2, t.Item4, t.Item3);
-                if (!string.IsNullOrWhiteSpace(txt))
-                {
-                    System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] LongText HIT order={aufnr} way=way02_STXH_ORDER_ONLY obj={t.Item1} id={t.Item2} lang={t.Item3} name={t.Item4}");
-                    longTextByAufnr[aufnr] = txt;
-                    return txt;
-                }
-            }
-
-            // way03 = STXH triples using aufpl fragment only
-            if (!string.IsNullOrWhiteSpace(aufpl))
-            {
-                var stxhAufplOnly = GetTextTriplesFromStxh("", aufpl).ToList();
-                foreach (var t in stxhAufplOnly)
-                {
-                    var txt = ReadLongText(t.Item1, t.Item2, t.Item4, t.Item3);
-                    if (!string.IsNullOrWhiteSpace(txt))
-                    {
-                        System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] LongText HIT order={aufnr} way=way03_STXH_AUFPL_ONLY obj={t.Item1} id={t.Item2} lang={t.Item3} name={t.Item4}");
-                        longTextByAufnr[aufnr] = txt;
-                        return txt;
-                    }
-                }
-            }
-
-            // way04
-            var hit04 = TryWay("way04_AUFK_KOPF_CLIENT+AUFNR", "AUFK", "KOPF", new[] { withClient }, langs);
-            if (!string.IsNullOrWhiteSpace(hit04)) return hit04;
-            // way05
-            var hit05 = TryWay("way05_AUFK_KOPF_AUFNR12", "AUFK", "KOPF", new[] { order12 }, langs);
-            if (!string.IsNullOrWhiteSpace(hit05)) return hit05;
-            // way06
-            var hit06 = TryWay("way06_AUFK_KOPF_AUFNR", "AUFK", "KOPF", new[] { orderNoZeros }, langs);
-            if (!string.IsNullOrWhiteSpace(hit06)) return hit06;
-            // way07
-            var hit07 = TryWay("way07_AUFK_LTXT_CLIENT+AUFNR", "AUFK", "LTXT", new[] { withClient, order12 }, langs);
-            if (!string.IsNullOrWhiteSpace(hit07)) return hit07;
-            // way08
-            var hit08 = TryWay("way08_AUFK_AVOT_CLIENT+AUFNR", "AUFK", "AVOT", new[] { withClient, order12, orderNoZeros }, langs);
-            if (!string.IsNullOrWhiteSpace(hit08)) return hit08;
-            // way09
-            var hit09 = TryWay("way09_AFKO_KOPF_AUFNR12", "AFKO", "KOPF", new[] { order12, withClient }, langs);
-            if (!string.IsNullOrWhiteSpace(hit09)) return hit09;
-            // way10
-            var hit10 = TryWay("way10_COAS_KOPF_AUFNR12", "COAS", "KOPF", new[] { order12, withClient }, langs);
-            if (!string.IsNullOrWhiteSpace(hit10)) return hit10;
-
-            System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] LongText no-hit across 10 distinct ways order={aufnr}");
-
-            if (!string.IsNullOrWhiteSpace(aufpl))
-            {
-                var ap10 = aufpl.Trim().PadLeft(10, '0');
-                AddCandidate($"{client}{ap10}00000001");
-                AddCandidate($"{client}{ap10}00000002");
-                AddCandidate($"{client}{ap10}00000003");
-                AddCandidate($"{client}{ap10}00000004");
-            }
-
-            foreach (var lang in new[] { "5", "S", "E" })
-            {
-                foreach (var id in new[] { "KOPF", "AVOT" })
-                {
-                    foreach (var n in GetTextNamesFromStxh("AUFK", id, lang, order12, null)) AddCandidate(n);
-                    if (!string.IsNullOrWhiteSpace(aufpl))
-                        foreach (var n in GetTextNamesFromStxh("AUFK", id, lang, order12, aufpl)) AddCandidate(n);
-                }
-            }
-            System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] LongText candidates order={aufnr} count={nameCandidates.Count}");
-
-            var tried = new List<Tuple<string, string, string>>();
-
-            var stxhTriples = GetTextTriplesFromStxh(order12, aufpl)
-                 .OrderBy(t => t.Item3 == "5" ? 0 : t.Item3 == "S" ? 1 : t.Item3 == "E" ? 2 : 3)
-                .ThenBy(t => t.Item1 == "AUFK" ? 0 : t.Item1 == "AFKO" ? 1 : 2)
-                .ThenBy(t => t.Item2 == "KOPF" ? 0 : t.Item2 == "AVOT" ? 1 : 2)
-                .ToList();
-            System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] STXH triples order={aufnr} count={stxhTriples.Count}");
-
-            foreach (var t in stxhTriples)
-            {
-                var key = Tuple.Create(t.Item3, t.Item2, t.Item4);
-                if (tried.Contains(key)) continue;
-                tried.Add(key);
-
-                var txt = ReadLongText(t.Item1, t.Item2, t.Item4, t.Item3);
-                if (txt == null) continue;
-                if (!string.IsNullOrWhiteSpace(txt))
-                {
-                    System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] LongText HIT order={aufnr} obj={t.Item1} id={t.Item2} lang={t.Item3} name={t.Item4} source=STXH");
-                    longTextByAufnr[aufnr] = txt;
-                    return txt;
-                }
-            }
-
-            foreach (var lang in new[] { "5", "S", "E" })
-            {
-                foreach (var id in new[] { "KOPF", "AVOT" })
-                {
-                    foreach (var name in nameCandidates)
-                    {
-                        var key = Tuple.Create(lang, id, name);
-                        if (tried.Contains(key)) continue;
-                        tried.Add(key);
-
-                        var txt = ReadLongText("AUFK", id, name, lang);
-                        if (txt == null) continue;
-                        if (!string.IsNullOrWhiteSpace(txt))
-                        {
-                            System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] LongText HIT order={aufnr} obj=AUFK id={id} lang={lang} name={name} source=CANDIDATE");
-                            longTextByAufnr[aufnr] = txt;
-                            return txt;
-                        }
-                    }
-                }
-            }
-
-            System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] LongText MISS order={aufnr}");
             longTextByAufnr[aufnr] = "";
             return "";
         }
