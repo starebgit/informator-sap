@@ -1003,6 +1003,98 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
             }
         }
 
+        string ReadLongTextViaBapiProdordGetDetail(string order12)
+        {
+            if (string.IsNullOrWhiteSpace(order12)) return null;
+            try
+            {
+                var f = repo.CreateFunction("BAPI_PRODORD_GET_DETAIL");
+                f.SetValue("NUMBER", order12);
+
+                try
+                {
+                    var objs = f.GetStructure("ORDER_OBJECTS");
+                    void SetObj(string field)
+                    {
+                        try { objs.SetValue(field, "X"); } catch { }
+                    }
+                    SetObj("HEADER");
+                    SetObj("OPERATIONS");
+                    SetObj("COMPONENTS");
+                }
+                catch { }
+
+                f.Invoke(dest);
+
+                var tableNames = new[]
+                {
+                    "HEADER_TEXT", "TEXT", "TEXT_LINES", "LONG_TEXT", "ORDER_TEXT", "HEADERTEXT"
+                };
+                var fieldNames = new[]
+                {
+                    "TDLINE", "TEXT_LINE", "TEXT", "LINE", "LTEXT", "TEXTLINE"
+                };
+
+                foreach (var tName in tableNames)
+                {
+                    IRfcTable t;
+                    try { t = f.GetTable(tName); }
+                    catch { t = null; }
+                    if (t == null || t.RowCount == 0) continue;
+
+                    var sb = new StringBuilder();
+                    for (int i = 0; i < t.RowCount; i++)
+                    {
+                        string line = null;
+                        foreach (var fn in fieldNames)
+                        {
+                            try
+                            {
+                                line = t[i].GetString(fn);
+                                if (!string.IsNullOrWhiteSpace(line)) break;
+                            }
+                            catch { }
+                        }
+
+                        if (string.IsNullOrWhiteSpace(line))
+                        {
+                            try
+                            {
+                                for (int c = 0; c < t[i].Count; c++)
+                                {
+                                    var val = t[i].GetString(c);
+                                    if (!string.IsNullOrWhiteSpace(val))
+                                    {
+                                        line = val;
+                                        break;
+                                    }
+                                }
+                            }
+                            catch { }
+                        }
+
+                        if (string.IsNullOrWhiteSpace(line)) continue;
+                        line = line.Trim();
+                        if (sb.Length > 0) sb.Append("\n");
+                        sb.Append(line);
+                    }
+
+                    var txt = sb.ToString().Trim();
+                    if (!string.IsNullOrWhiteSpace(txt))
+                    {
+                        System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] LongText HIT order={order12} source=BAPI_PRODORD_GET_DETAIL table={tName}");
+                        return txt;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] BAPI_PRODORD_GET_DETAIL long text read failed order={order12} :: {ex.Message}");
+            }
+
+            return null;
+        }
+
         IEnumerable<string> GetTextNamesFromStxh(string textObject, string textId, string sapLanguage, string aufnr12, string aufpl)
         {
             var names = new List<string>();
@@ -1394,6 +1486,13 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
             var orderNoZeros = order12.TrimStart('0');
             aufplByAufnr.TryGetValue(order12, out var aufpl);
             var client = dest.SystemAttributes.Client ?? "";
+
+            var bapiText = ReadLongTextViaBapiProdordGetDetail(order12);
+            if (!string.IsNullOrWhiteSpace(bapiText))
+            {
+                longTextByAufnr[aufnr] = bapiText;
+                return bapiText;
+            }
 
             var nameCandidates = new List<string>();
             void AddCandidate(string n)
