@@ -1531,8 +1531,6 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
             var order12 = aufnr.Trim().PadLeft(12, '0');
             var orderNoZeros = order12.TrimStart('0');
             var client = dest.SystemAttributes.Client ?? "";
-            var aufpl = aufplByAufnr.TryGetValue(order12, out var apl) ? apl : "";
-
             var candidates = new List<Tuple<string, string, string, string, string>>();
             void AddCandidate(string obj, string id, string name, string lang, string source)
             {
@@ -1542,23 +1540,57 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
                 candidates.Add(Tuple.Create(obj.Trim(), id.Trim(), name.Trim(), lang.Trim(), source));
             }
 
-            // exact key from CO03/SE37 first
+            // exact key from CO03/SE37 first (keep this deterministic and minimal)
             AddCandidate("AUFK", "KOPF", client + order12, "5", "exact");
-            // same object/id with additional common variants
-            foreach (var lang in new[] { spras, "5", "E" }.Distinct(StringComparer.OrdinalIgnoreCase))
+            AddCandidate("AUFK", "KOPF", client + order12, spras, "fallback-lang");
+            AddCandidate("AUFK", "KOPF", client + order12, "E", "fallback-lang");
+
+            // If exact key misses, discover actual text object/id/lang directly from STXH by exact TDNAME variants.
+            IEnumerable<Tuple<string, string, string, string>> ResolveTriplesFromStxhByNameVariants()
             {
-                AddCandidate("AUFK", "KOPF", client + order12, lang, "standard");
-                AddCandidate("AUFK", "KOPF", order12, lang, "standard");
+                var triples = new List<Tuple<string, string, string, string>>();
+                var names = new List<string> { client + order12, order12 };
                 if (!string.IsNullOrWhiteSpace(orderNoZeros))
                 {
-                    AddCandidate("AUFK", "KOPF", client + orderNoZeros, lang, "standard");
-                    AddCandidate("AUFK", "KOPF", orderNoZeros, lang, "standard");
+                    names.Add(client + orderNoZeros);
+                    names.Add(orderNoZeros);
                 }
+
+                foreach (var n in names.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.Ordinal))
+                {
+                    var data = ReadTable("STXH", 30,
+                        f =>
+                        {
+                            f.Append(); f.SetValue("FIELDNAME", "TDOBJECT");
+                            f.Append(); f.SetValue("FIELDNAME", "TDID");
+                            f.Append(); f.SetValue("FIELDNAME", "TDSPRAS");
+                            f.Append(); f.SetValue("FIELDNAME", "TDNAME");
+                        },
+                        o => { AppendWhere(o, $"TDNAME = '{n.Replace("'", "''")}'"); });
+
+                    if (data == null || data.RowCount == 0) continue;
+                    for (int i = 0; i < data.RowCount; i++)
+                    {
+                        var p = (data[i].GetString("WA") ?? "").Split('|');
+                        if (p.Length < 4) continue;
+                        var obj = (p[0] ?? "").Trim();
+                        var id = (p[1] ?? "").Trim();
+                        var lang = (p[2] ?? "").Trim();
+                        var name = (p[3] ?? "").Trim();
+                        if (string.IsNullOrWhiteSpace(obj) || string.IsNullOrWhiteSpace(id) ||
+                            string.IsNullOrWhiteSpace(lang) || string.IsNullOrWhiteSpace(name))
+                            continue;
+
+                        var t = Tuple.Create(obj, id, lang, name);
+                        if (!triples.Contains(t)) triples.Add(t);
+                    }
+                }
+
+                return triples;
             }
 
-            // discover customizing-specific text keys from STXH
-            foreach (var t in GetTextTriplesFromStxh(order12, aufpl))
-                AddCandidate(t.Item1, t.Item2, t.Item4, t.Item3, "stxh");
+            foreach (var t in ResolveTriplesFromStxhByNameVariants())
+                AddCandidate(t.Item1, t.Item2, t.Item4, t.Item3, "stxh-name-exact");
 
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var c in candidates)
@@ -1578,14 +1610,7 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
                 return txt;
             }
 
-            var bapiTxt = ReadLongTextViaBapiProdordGetDetail(order12);
-            if (!string.IsNullOrWhiteSpace(bapiTxt))
-            {
-                longTextByAufnr[aufnr] = bapiTxt;
-                return bapiTxt;
-            }
-
-            System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] LongText MISS order={aufnr} all strategies exhausted");
+            System.Diagnostics.Trace.WriteLine($"[GetOrdersByWorkCenter] LongText MISS order={aufnr} exact+stxh strategies exhausted");
 
             longTextByAufnr[aufnr] = "";
             return "";
