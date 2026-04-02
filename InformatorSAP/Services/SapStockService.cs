@@ -192,10 +192,9 @@ namespace InformatorSAP.Services
             Trace.WriteLine($"[SapStockService] planned cache MISS; calculating batched planned total for {materialNumbers.Count} materials");
 
             var mats18 = materialNumbers.Select(m => (m ?? string.Empty).Trim().PadLeft(18, '0')).Distinct(StringComparer.Ordinal).ToList();
-            var perOrderDelivered = new Dictionary<string, decimal>(StringComparer.Ordinal);
             var perOrderUnit = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-            // 1) AFPO batched: get candidate orders + delivered qty.
+            // 1) AFPO batched: get candidate orders (and fallback unit hints).
             var candidateOrders = new HashSet<string>(StringComparer.Ordinal);
             const int matChunk = 30;
             for (int i = 0; i < mats18.Count; i += matChunk)
@@ -205,15 +204,14 @@ namespace InformatorSAP.Services
 
                 var rows = ReadTable(
                     "AFPO",
-                    new[] { "AUFNR", "MATNR", "WEMNG", "MEINS" },
+                    new[] { "AUFNR", "MATNR", "MEINS" },
                     BuildWhereOptions($"DWERK = '{EscapeForWhere(werks)}' AND MATNR IN ( {inList} )"));
 
                 foreach (var row in rows)
                 {
                     var aufnr = SafeGet(row, 0);
                     var matnr = SafeGet(row, 1);
-                    var wemngRaw = SafeGet(row, 2);
-                    var meins = SafeGet(row, 3);
+                    var meins = SafeGet(row, 2);
 
                     if (string.IsNullOrWhiteSpace(aufnr) || string.IsNullOrWhiteSpace(matnr))
                         continue;
@@ -223,11 +221,6 @@ namespace InformatorSAP.Services
 
                     candidateOrders.Add(aufnr.PadLeft(12, '0'));
                     var key = aufnr.PadLeft(12, '0');
-                    var delivered = ParseQuanScaled(wemngRaw);
-
-                    if (!perOrderDelivered.ContainsKey(key)) perOrderDelivered[key] = 0m;
-                    perOrderDelivered[key] += delivered;
-
                     if (!string.IsNullOrWhiteSpace(meins) && !perOrderUnit.ContainsKey(key))
                         perOrderUnit[key] = meins;
                 }
@@ -323,13 +316,8 @@ namespace InformatorSAP.Services
                     var gmein = SafeGet(row, 2);
                     if (string.IsNullOrWhiteSpace(aufnr)) continue;
 
-                    decimal delivered;
-                    if (!perOrderDelivered.TryGetValue(aufnr, out delivered)) delivered = 0m;
-
                     var planned = ParseQuanScaled(gamngRaw);
-                    var remaining = planned - delivered;
-                    if (remaining < 0m) remaining = 0m;
-                    plannedTotal += remaining;
+                    plannedTotal += planned;
 
                     var candidateUnit = !string.IsNullOrWhiteSpace(gmein)
                         ? gmein
