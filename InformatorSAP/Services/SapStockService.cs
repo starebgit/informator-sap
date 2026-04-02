@@ -28,8 +28,22 @@ namespace InformatorSAP.Services
         private sealed class CacheEntry
         {
             public DateTime CreatedUtc { get; set; }
-            public decimal Total { get; set; }
-            public string Unit { get; set; }
+            public decimal PlannedTotal { get; set; }
+            public string PlannedUnit { get; set; }
+            public decimal DeliveredTotal { get; set; }
+            public string DeliveredUnit { get; set; }
+            public decimal RemainingTotal { get; set; }
+            public string RemainingUnit { get; set; }
+        }
+
+        private sealed class PlannedAggregationResult
+        {
+            public decimal PlannedTotal { get; set; }
+            public string PlannedUnit { get; set; }
+            public decimal DeliveredTotal { get; set; }
+            public string DeliveredUnit { get; set; }
+            public decimal RemainingTotal { get; set; }
+            public string RemainingUnit { get; set; }
         }
 
         public StockSummaryDto GetUnrestrictedStockSummary(string werks, string lgort, string query, bool includePlanned = true)
@@ -57,7 +71,11 @@ namespace InformatorSAP.Services
                     Total = 0m,
                     Unit = null,
                     PlannedTotal = 0m,
-                    PlannedUnit = null
+                    PlannedUnit = null,
+                    DeliveredTotal = 0m,
+                    DeliveredUnit = null,
+                    PlannedMinusDeliveredTotal = 0m,
+                    PlannedMinusDeliveredUnit = null
                 };
             }
 
@@ -94,10 +112,10 @@ namespace InformatorSAP.Services
 
             var planned = includePlanned
                 ? CalculatePlannedTotalBatched(matchingMaterials, werks)
-                : (0m, (string)null);
+                : new PlannedAggregationResult();
 
             sw.Stop();
-            Trace.WriteLine($"[SapStockService] DONE in {sw.ElapsedMilliseconds} ms plannedTotal={planned.Item1} plannedUnit={planned.Item2}");
+            Trace.WriteLine($"[SapStockService] DONE in {sw.ElapsedMilliseconds} ms plannedTotal={planned.PlannedTotal} deliveredTotal={planned.DeliveredTotal} remainingTotal={planned.RemainingTotal}");
 
             return new StockSummaryDto
             {
@@ -106,8 +124,12 @@ namespace InformatorSAP.Services
                 Query = query,
                 Total = total,
                 Unit = unit,
-                PlannedTotal = planned.Item1,
-                PlannedUnit = planned.Item2
+                PlannedTotal = planned.PlannedTotal,
+                PlannedUnit = planned.PlannedUnit,
+                DeliveredTotal = planned.DeliveredTotal,
+                DeliveredUnit = planned.DeliveredUnit,
+                PlannedMinusDeliveredTotal = planned.RemainingTotal,
+                PlannedMinusDeliveredUnit = planned.RemainingUnit
             };
         }
 
@@ -173,10 +195,10 @@ namespace InformatorSAP.Services
         }
 
 
-        private (decimal Total, string Unit) CalculatePlannedTotalBatched(HashSet<string> materialNumbers, string werks)
+        private PlannedAggregationResult CalculatePlannedTotalBatched(HashSet<string> materialNumbers, string werks)
         {
             if (materialNumbers == null || materialNumbers.Count == 0)
-                return (0m, null);
+                return new PlannedAggregationResult();
 
             var cacheKey = BuildPlannedCacheKey(werks, materialNumbers);
             CacheEntry cached;
@@ -185,7 +207,15 @@ namespace InformatorSAP.Services
                 if (DateTime.UtcNow - cached.CreatedUtc <= PlannedCacheTtl)
                 {
                     Trace.WriteLine($"[SapStockService] planned cache HIT key={cacheKey}");
-                    return (cached.Total, cached.Unit);
+                    return new PlannedAggregationResult
+                    {
+                        PlannedTotal = cached.PlannedTotal,
+                        PlannedUnit = cached.PlannedUnit,
+                        DeliveredTotal = cached.DeliveredTotal,
+                        DeliveredUnit = cached.DeliveredUnit,
+                        RemainingTotal = cached.RemainingTotal,
+                        RemainingUnit = cached.RemainingUnit
+                    };
                 }
             }
 
@@ -193,6 +223,8 @@ namespace InformatorSAP.Services
 
             var mats18 = materialNumbers.Select(m => (m ?? string.Empty).Trim().PadLeft(18, '0')).Distinct(StringComparer.Ordinal).ToList();
             var perOrderUnit = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var perOrderDelivered = new Dictionary<string, decimal>(StringComparer.Ordinal);
+            var perOrderDeliveredUnit = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var orderToMaterials = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
             var perMaterialPlanned = new Dictionary<string, decimal>(StringComparer.Ordinal);
 
@@ -206,14 +238,15 @@ namespace InformatorSAP.Services
 
                 var rows = ReadTable(
                     "AFPO",
-                    new[] { "AUFNR", "MATNR", "MEINS" },
+                    new[] { "AUFNR", "MATNR", "WEMNG", "MEINS" },
                     BuildWhereOptions($"DWERK = '{EscapeForWhere(werks)}' AND MATNR IN ( {inList} )"));
 
                 foreach (var row in rows)
                 {
                     var aufnr = SafeGet(row, 0);
                     var matnr = SafeGet(row, 1);
-                    var meins = SafeGet(row, 2);
+                    var wemngRaw = SafeGet(row, 2);
+                    var meins = SafeGet(row, 3);
 
                     if (string.IsNullOrWhiteSpace(aufnr) || string.IsNullOrWhiteSpace(matnr))
                         continue;
@@ -232,6 +265,13 @@ namespace InformatorSAP.Services
                     }
                     matsForOrder.Add(matnr);
 
+                    var delivered = ParseQuanScaled(wemngRaw);
+                    if (!perOrderDelivered.ContainsKey(key)) perOrderDelivered[key] = 0m;
+                    perOrderDelivered[key] += delivered;
+
+                    if (!string.IsNullOrWhiteSpace(meins) && !perOrderDeliveredUnit.ContainsKey(key))
+                        perOrderDeliveredUnit[key] = meins;
+
                     if (!string.IsNullOrWhiteSpace(meins) && !perOrderUnit.ContainsKey(key))
                         perOrderUnit[key] = meins;
                 }
@@ -241,8 +281,8 @@ namespace InformatorSAP.Services
 
             if (candidateOrders.Count == 0)
             {
-                PlannedCache[cacheKey] = new CacheEntry { CreatedUtc = DateTime.UtcNow, Total = 0m, Unit = null };
-                return (0m, null);
+                PlannedCache[cacheKey] = new CacheEntry { CreatedUtc = DateTime.UtcNow, PlannedTotal = 0m, PlannedUnit = null, DeliveredTotal = 0m, DeliveredUnit = null, RemainingTotal = 0m, RemainingUnit = null };
+                return new PlannedAggregationResult();
             }
 
             // 2) CAUFV batched: AUFNR -> OBJNR.
@@ -269,8 +309,8 @@ namespace InformatorSAP.Services
 
             if (objByOrder.Count == 0)
             {
-                PlannedCache[cacheKey] = new CacheEntry { CreatedUtc = DateTime.UtcNow, Total = 0m, Unit = null };
-                return (0m, null);
+                PlannedCache[cacheKey] = new CacheEntry { CreatedUtc = DateTime.UtcNow, PlannedTotal = 0m, PlannedUnit = null, DeliveredTotal = 0m, DeliveredUnit = null, RemainingTotal = 0m, RemainingUnit = null };
+                return new PlannedAggregationResult();
             }
 
             // 3) JEST: check active released status (I0002) per OBJNR.
@@ -302,13 +342,16 @@ namespace InformatorSAP.Services
 
             if (releasedOrders.Count == 0)
             {
-                PlannedCache[cacheKey] = new CacheEntry { CreatedUtc = DateTime.UtcNow, Total = 0m, Unit = null };
-                return (0m, null);
+                PlannedCache[cacheKey] = new CacheEntry { CreatedUtc = DateTime.UtcNow, PlannedTotal = 0m, PlannedUnit = null, DeliveredTotal = 0m, DeliveredUnit = null, RemainingTotal = 0m, RemainingUnit = null };
+                return new PlannedAggregationResult();
             }
 
             // 4) AFKO batched: planned qty + unit.
             decimal plannedTotal = 0m;
             string plannedUnit = null;
+            decimal deliveredTotal = 0m;
+            string deliveredUnit = null;
+            decimal remainingTotal = 0m;
             var releasedList = releasedOrders.ToList();
 
             for (int i = 0; i < releasedList.Count; i += orderChunk)
@@ -329,6 +372,22 @@ namespace InformatorSAP.Services
 
                     var planned = ParseQuanScaled(gamngRaw);
                     plannedTotal += planned;
+
+                    decimal deliveredForOrder;
+                    if (!perOrderDelivered.TryGetValue(aufnr, out deliveredForOrder)) deliveredForOrder = 0m;
+                    deliveredTotal += deliveredForOrder;
+
+                    var remaining = planned - deliveredForOrder;
+                    if (remaining < 0m) remaining = 0m;
+                    remainingTotal += remaining;
+
+                    var deliveredUnitCandidate = perOrderDeliveredUnit.ContainsKey(aufnr) ? perOrderDeliveredUnit[aufnr] : null;
+                    if (!string.IsNullOrWhiteSpace(deliveredUnitCandidate))
+                    {
+                        if (string.IsNullOrWhiteSpace(deliveredUnit)) deliveredUnit = deliveredUnitCandidate;
+                        else if (!string.Equals(deliveredUnit, deliveredUnitCandidate, StringComparison.OrdinalIgnoreCase))
+                            throw new InvalidOperationException("Delivered quantity has mixed units for selected materials; cannot return a single DeliveredUnit.");
+                    }
 
                     HashSet<string> matsForOrder;
                     if (orderToMaterials.TryGetValue(aufnr, out matsForOrder))
@@ -367,11 +426,23 @@ namespace InformatorSAP.Services
             PlannedCache[cacheKey] = new CacheEntry
             {
                 CreatedUtc = DateTime.UtcNow,
-                Total = plannedTotal,
-                Unit = plannedUnit
+                PlannedTotal = plannedTotal,
+                PlannedUnit = plannedUnit,
+                DeliveredTotal = deliveredTotal,
+                DeliveredUnit = deliveredUnit,
+                RemainingTotal = remainingTotal,
+                RemainingUnit = plannedUnit
             };
 
-            return (plannedTotal, plannedUnit);
+            return new PlannedAggregationResult
+            {
+                PlannedTotal = plannedTotal,
+                PlannedUnit = plannedUnit,
+                DeliveredTotal = deliveredTotal,
+                DeliveredUnit = deliveredUnit,
+                RemainingTotal = remainingTotal,
+                RemainingUnit = plannedUnit
+            };
         }
 
         private static decimal ParseQuanScaled(string value)

@@ -9,5 +9,9 @@ namespace InformatorSAP.Classes
         public string Unit { get; set; }
         public decimal PlannedTotal { get; set; }
         public string PlannedUnit { get; set; }
+        public decimal DeliveredTotal { get; set; }
+        public string DeliveredUnit { get; set; }
+        public decimal PlannedMinusDeliveredTotal { get; set; }
+        public string PlannedMinusDeliveredUnit { get; set; }
     }
 }
