@@ -106,8 +106,8 @@ namespace InformatorSAP.Services
                 Query = query,
                 Total = total,
                 Unit = unit,
-                PlannedTotal = planned.Total,
-                PlannedUnit = planned.Unit
+                PlannedTotal = planned.Item1,
+                PlannedUnit = planned.Item2
             };
         }
 
