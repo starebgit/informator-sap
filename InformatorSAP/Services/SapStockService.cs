@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Diagnostics;
 using System.Linq;
 using InformatorSAP.Classes;
 using SAP.Middleware.Connector;
@@ -11,26 +13,42 @@ namespace InformatorSAP.Services
     {
         private readonly RfcDestination _destination;
         private readonly RfcRepository _repository;
-        private readonly SapService _sapService;
+        private static readonly ConcurrentDictionary<string, CacheEntry> PlannedCache =
+            new ConcurrentDictionary<string, CacheEntry>(StringComparer.OrdinalIgnoreCase);
+        private static readonly TimeSpan PlannedCacheTtl = TimeSpan.FromMinutes(3);
 
         public SapStockService()
         {
             // Reuse existing destination configuration/auth setup.
-            _sapService = new SapService();
+            var _ = new SapService();
             _destination = RfcDestinationManager.GetDestination("INFORMATOR_SAP");
             _repository = _destination.Repository;
         }
 
-        public StockSummaryDto GetUnrestrictedStockSummary(string werks, string lgort, string query)
+        private sealed class CacheEntry
         {
+            public DateTime CreatedUtc { get; set; }
+            public decimal Total { get; set; }
+            public string Unit { get; set; }
+        }
+
+        public StockSummaryDto GetUnrestrictedStockSummary(string werks, string lgort, string query, bool includePlanned = true)
+        {
+            var sw = Stopwatch.StartNew();
+            Trace.WriteLine($"[SapStockService] START werks={werks}, lgort={lgort}, query={query}, includePlanned={includePlanned}");
+
             var normalizedQuery = (query ?? string.Empty).Trim();
             if (string.IsNullOrWhiteSpace(werks)) throw new ArgumentException("WERKS is required.");
             if (string.IsNullOrWhiteSpace(lgort)) throw new ArgumentException("LGORT is required.");
             if (string.IsNullOrWhiteSpace(normalizedQuery)) throw new ArgumentException("query is required.");
 
             var matchingMaterials = GetMatchingMaterialsByShortText(normalizedQuery);
+            Trace.WriteLine($"[SapStockService] matchingMaterials={matchingMaterials.Count}");
             if (matchingMaterials.Count == 0)
             {
+                sw.Stop();
+                Trace.WriteLine($"[SapStockService] DONE in {sw.ElapsedMilliseconds} ms (no matching materials)");
+
                 return new StockSummaryDto
                 {
                     WERKS = werks,
@@ -72,7 +90,14 @@ namespace InformatorSAP.Services
             }
 
             var unit = ResolveBaseUnit(contributingMaterials);
-            var planned = CalculatePlannedTotal(matchingMaterials, werks);
+            Trace.WriteLine($"[SapStockService] stockTotal={total}, stockUnit={unit}, contributingMaterials={contributingMaterials.Count}");
+
+            var planned = includePlanned
+                ? CalculatePlannedTotalBatched(matchingMaterials, werks)
+                : (0m, (string)null);
+
+            sw.Stop();
+            Trace.WriteLine($"[SapStockService] DONE in {sw.ElapsedMilliseconds} ms plannedTotal={planned.Item1} plannedUnit={planned.Item2}");
 
             return new StockSummaryDto
             {
@@ -148,31 +173,164 @@ namespace InformatorSAP.Services
         }
 
 
-        private (decimal Total, string Unit) CalculatePlannedTotal(HashSet<string> materialNumbers, string werks)
+        private (decimal Total, string Unit) CalculatePlannedTotalBatched(HashSet<string> materialNumbers, string werks)
         {
             if (materialNumbers == null || materialNumbers.Count == 0)
                 return (0m, null);
 
+            var cacheKey = BuildPlannedCacheKey(werks, materialNumbers);
+            CacheEntry cached;
+            if (PlannedCache.TryGetValue(cacheKey, out cached))
+            {
+                if (DateTime.UtcNow - cached.CreatedUtc <= PlannedCacheTtl)
+                {
+                    Trace.WriteLine($"[SapStockService] planned cache HIT key={cacheKey}");
+                    return (cached.Total, cached.Unit);
+                }
+            }
+
+            Trace.WriteLine($"[SapStockService] planned cache MISS; calculating batched planned total for {materialNumbers.Count} materials");
+
+            var mats18 = materialNumbers.Select(m => (m ?? string.Empty).Trim().PadLeft(18, '0')).Distinct(StringComparer.Ordinal).ToList();
+            var perOrderDelivered = new Dictionary<string, decimal>(StringComparer.Ordinal);
+            var perOrderUnit = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            // 1) AFPO batched: get candidate orders + delivered qty.
+            var candidateOrders = new HashSet<string>(StringComparer.Ordinal);
+            const int matChunk = 30;
+            for (int i = 0; i < mats18.Count; i += matChunk)
+            {
+                var slice = mats18.Skip(i).Take(matChunk).ToList();
+                var inList = string.Join(",", slice.Select(m => "'" + EscapeForWhere(m) + "'"));
+
+                var rows = ReadTable(
+                    "AFPO",
+                    new[] { "AUFNR", "MATNR", "WEMNG", "MEINS" },
+                    BuildWhereOptions($"DWERK = '{EscapeForWhere(werks)}' AND MATNR IN ( {inList} )"));
+
+                foreach (var row in rows)
+                {
+                    var aufnr = SafeGet(row, 0);
+                    var matnr = SafeGet(row, 1);
+                    var wemngRaw = SafeGet(row, 2);
+                    var meins = SafeGet(row, 3);
+
+                    if (string.IsNullOrWhiteSpace(aufnr) || string.IsNullOrWhiteSpace(matnr))
+                        continue;
+
+                    if (!mats18.Contains(matnr, StringComparer.Ordinal))
+                        continue;
+
+                    candidateOrders.Add(aufnr.PadLeft(12, '0'));
+                    var key = aufnr.PadLeft(12, '0');
+                    var delivered = ParseQuanScaled(wemngRaw);
+
+                    if (!perOrderDelivered.ContainsKey(key)) perOrderDelivered[key] = 0m;
+                    perOrderDelivered[key] += delivered;
+
+                    if (!string.IsNullOrWhiteSpace(meins) && !perOrderUnit.ContainsKey(key))
+                        perOrderUnit[key] = meins;
+                }
+
+                Trace.WriteLine($"[SapStockService] planned AFPO chunk {i / matChunk + 1}: rows={rows.Count}, candidateOrders={candidateOrders.Count}");
+            }
+
+            if (candidateOrders.Count == 0)
+            {
+                PlannedCache[cacheKey] = new CacheEntry { CreatedUtc = DateTime.UtcNow, Total = 0m, Unit = null };
+                return (0m, null);
+            }
+
+            // 2) CAUFV batched: AUFNR -> OBJNR.
+            var orderList = candidateOrders.ToList();
+            var objByOrder = new Dictionary<string, string>(StringComparer.Ordinal);
+            const int orderChunk = 120;
+            for (int i = 0; i < orderList.Count; i += orderChunk)
+            {
+                var slice = orderList.Skip(i).Take(orderChunk).ToList();
+                var inList = string.Join(",", slice.Select(a => "'" + EscapeForWhere(a) + "'"));
+                var rows = ReadTable(
+                    "CAUFV",
+                    new[] { "AUFNR", "OBJNR" },
+                    BuildWhereOptions($"AUFNR IN ( {inList} )"));
+
+                foreach (var row in rows)
+                {
+                    var aufnr = SafeGet(row, 0)?.PadLeft(12, '0');
+                    var objnr = SafeGet(row, 1);
+                    if (!string.IsNullOrWhiteSpace(aufnr) && !string.IsNullOrWhiteSpace(objnr))
+                        objByOrder[aufnr] = objnr;
+                }
+            }
+
+            if (objByOrder.Count == 0)
+            {
+                PlannedCache[cacheKey] = new CacheEntry { CreatedUtc = DateTime.UtcNow, Total = 0m, Unit = null };
+                return (0m, null);
+            }
+
+            // 3) JEST batched: keep released orders (I0002 active).
+            var releasedOrders = new HashSet<string>(StringComparer.Ordinal);
+            var objToOrder = objByOrder.ToDictionary(k => k.Value, v => v.Key, StringComparer.Ordinal);
+            var objList = objByOrder.Values.Distinct().ToList();
+            const int objChunk = 150;
+            for (int i = 0; i < objList.Count; i += objChunk)
+            {
+                var slice = objList.Skip(i).Take(objChunk).ToList();
+                var inList = string.Join(",", slice.Select(o => "'" + EscapeForWhere(o) + "'"));
+                var rows = ReadTable(
+                    "JEST",
+                    new[] { "OBJNR", "STAT", "INACT" },
+                    BuildWhereOptions($"OBJNR IN ( {inList} ) AND STAT = 'I0002' AND INACT = ' '"));
+
+                foreach (var row in rows)
+                {
+                    var objnr = SafeGet(row, 0);
+                    if (string.IsNullOrWhiteSpace(objnr)) continue;
+                    string order;
+                    if (objToOrder.TryGetValue(objnr, out order))
+                        releasedOrders.Add(order);
+                }
+            }
+
+            if (releasedOrders.Count == 0)
+            {
+                PlannedCache[cacheKey] = new CacheEntry { CreatedUtc = DateTime.UtcNow, Total = 0m, Unit = null };
+                return (0m, null);
+            }
+
+            // 4) AFKO batched: planned qty + unit.
             decimal plannedTotal = 0m;
             string plannedUnit = null;
+            var releasedList = releasedOrders.ToList();
 
-            foreach (var matnr in materialNumbers)
+            for (int i = 0; i < releasedList.Count; i += orderChunk)
             {
-                var orders = _sapService.GetOpenOrdersForMaterial(matnr, werks, "SL", 0, includeDisplayInfo: true)
-                             ?? new List<OpenOrderId>();
+                var slice = releasedList.Skip(i).Take(orderChunk).ToList();
+                var inList = string.Join(",", slice.Select(a => "'" + EscapeForWhere(a) + "'"));
+                var rows = ReadTable(
+                    "AFKO",
+                    new[] { "AUFNR", "GAMNG", "GMEIN" },
+                    BuildWhereOptions($"AUFNR IN ( {inList} )"));
 
-                foreach (var order in orders)
+                foreach (var row in rows)
                 {
-                    var qty = order.Quantity ?? 0m;
-                    var delivered = order.Delivered ?? 0m;
-                    var remaining = qty - delivered;
-                    if (remaining < 0m) remaining = 0m;
+                    var aufnr = SafeGet(row, 0)?.PadLeft(12, '0');
+                    var gamngRaw = SafeGet(row, 1);
+                    var gmein = SafeGet(row, 2);
+                    if (string.IsNullOrWhiteSpace(aufnr)) continue;
 
+                    decimal delivered;
+                    if (!perOrderDelivered.TryGetValue(aufnr, out delivered)) delivered = 0m;
+
+                    var planned = ParseQuanScaled(gamngRaw);
+                    var remaining = planned - delivered;
+                    if (remaining < 0m) remaining = 0m;
                     plannedTotal += remaining;
 
-                    var candidateUnit = string.IsNullOrWhiteSpace(order.Unit)
-                        ? order.DeliveredUnit
-                        : order.Unit;
+                    var candidateUnit = !string.IsNullOrWhiteSpace(gmein)
+                        ? gmein
+                        : (perOrderUnit.ContainsKey(aufnr) ? perOrderUnit[aufnr] : null);
 
                     if (string.IsNullOrWhiteSpace(candidateUnit))
                         continue;
@@ -189,7 +347,52 @@ namespace InformatorSAP.Services
                 }
             }
 
+            PlannedCache[cacheKey] = new CacheEntry
+            {
+                CreatedUtc = DateTime.UtcNow,
+                Total = plannedTotal,
+                Unit = plannedUnit
+            };
+
             return (plannedTotal, plannedUnit);
+        }
+
+        private static decimal ParseQuanScaled(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return 0m;
+
+            var v = value.Trim();
+            decimal d;
+
+            if (v.IndexOf('.') < 0 && v.IndexOf(',') < 0)
+            {
+                if (decimal.TryParse(v, NumberStyles.Any, CultureInfo.InvariantCulture, out d))
+                    return d / 1000m;
+            }
+
+            if (decimal.TryParse(v.Replace(',', '.'), NumberStyles.Any, CultureInfo.InvariantCulture, out d))
+                return d;
+
+            return 0m;
+        }
+
+        private static string BuildPlannedCacheKey(string werks, HashSet<string> materialNumbers)
+        {
+            var mats = materialNumbers.Select(x => (x ?? string.Empty).Trim()).OrderBy(x => x, StringComparer.Ordinal).ToArray();
+            return (werks ?? string.Empty).Trim() + "|" + string.Join(",", mats);
+        }
+
+        private static string[] BuildWhereOptions(string where)
+        {
+            if (string.IsNullOrWhiteSpace(where)) return new string[0];
+
+            var parts = new List<string>();
+            var line = where.StartsWith(" ") ? where : " " + where;
+            for (int i = 0; i < line.Length; i += 72)
+            {
+                parts.Add(line.Substring(i, Math.Min(72, line.Length - i)));
+            }
+            return parts.ToArray();
         }
 
         private List<string[]> ReadTable(string table, string[] fields, string[] options, int rowCount = 0)
