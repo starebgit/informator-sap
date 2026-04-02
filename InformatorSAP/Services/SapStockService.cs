@@ -193,6 +193,8 @@ namespace InformatorSAP.Services
 
             var mats18 = materialNumbers.Select(m => (m ?? string.Empty).Trim().PadLeft(18, '0')).Distinct(StringComparer.Ordinal).ToList();
             var perOrderUnit = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var orderToMaterials = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+            var perMaterialPlanned = new Dictionary<string, decimal>(StringComparer.Ordinal);
 
             // 1) AFPO batched: get candidate orders (and fallback unit hints).
             var candidateOrders = new HashSet<string>(StringComparer.Ordinal);
@@ -221,6 +223,15 @@ namespace InformatorSAP.Services
 
                     candidateOrders.Add(aufnr.PadLeft(12, '0'));
                     var key = aufnr.PadLeft(12, '0');
+
+                    HashSet<string> matsForOrder;
+                    if (!orderToMaterials.TryGetValue(key, out matsForOrder))
+                    {
+                        matsForOrder = new HashSet<string>(StringComparer.Ordinal);
+                        orderToMaterials[key] = matsForOrder;
+                    }
+                    matsForOrder.Add(matnr);
+
                     if (!string.IsNullOrWhiteSpace(meins) && !perOrderUnit.ContainsKey(key))
                         perOrderUnit[key] = meins;
                 }
@@ -319,6 +330,16 @@ namespace InformatorSAP.Services
                     var planned = ParseQuanScaled(gamngRaw);
                     plannedTotal += planned;
 
+                    HashSet<string> matsForOrder;
+                    if (orderToMaterials.TryGetValue(aufnr, out matsForOrder))
+                    {
+                        foreach (var mat in matsForOrder)
+                        {
+                            if (!perMaterialPlanned.ContainsKey(mat)) perMaterialPlanned[mat] = 0m;
+                            perMaterialPlanned[mat] += planned;
+                        }
+                    }
+
                     var candidateUnit = !string.IsNullOrWhiteSpace(gmein)
                         ? gmein
                         : (perOrderUnit.ContainsKey(aufnr) ? perOrderUnit[aufnr] : null);
@@ -336,6 +357,11 @@ namespace InformatorSAP.Services
                             "Planned quantity has mixed units for selected materials; cannot return a single PlannedUnit.");
                     }
                 }
+            }
+
+            foreach (var kv in perMaterialPlanned.OrderBy(x => x.Key, StringComparer.Ordinal))
+            {
+                Trace.WriteLine($"[SapStockService] planned material total MATNR={kv.Key} planned={kv.Value}");
             }
 
             PlannedCache[cacheKey] = new CacheEntry
