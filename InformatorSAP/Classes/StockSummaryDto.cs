@@ -7,5 +7,7 @@ namespace InformatorSAP.Classes
         public string Query { get; set; }
         public decimal Total { get; set; }
         public string Unit { get; set; }
+        public decimal PlannedTotal { get; set; }
+        public string PlannedUnit { get; set; }
     }
 }

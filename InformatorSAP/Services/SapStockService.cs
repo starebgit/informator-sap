@@ -11,11 +11,12 @@ namespace InformatorSAP.Services
     {
         private readonly RfcDestination _destination;
         private readonly RfcRepository _repository;
+        private readonly SapService _sapService;
 
         public SapStockService()
         {
             // Reuse existing destination configuration/auth setup.
-            var _ = new SapService();
+            _sapService = new SapService();
             _destination = RfcDestinationManager.GetDestination("INFORMATOR_SAP");
             _repository = _destination.Repository;
         }
@@ -36,7 +37,9 @@ namespace InformatorSAP.Services
                     LGORT = lgort,
                     Query = query,
                     Total = 0m,
-                    Unit = null
+                    Unit = null,
+                    PlannedTotal = 0m,
+                    PlannedUnit = null
                 };
             }
 
@@ -69,6 +72,7 @@ namespace InformatorSAP.Services
             }
 
             var unit = ResolveBaseUnit(contributingMaterials);
+            var planned = CalculatePlannedTotal(matchingMaterials, werks);
 
             return new StockSummaryDto
             {
@@ -76,7 +80,9 @@ namespace InformatorSAP.Services
                 LGORT = lgort,
                 Query = query,
                 Total = total,
-                Unit = unit
+                Unit = unit,
+                PlannedTotal = planned.Total,
+                PlannedUnit = planned.Unit
             };
         }
 
@@ -139,6 +145,51 @@ namespace InformatorSAP.Services
                 return null;
 
             return unitCount.OrderByDescending(x => x.Value).ThenBy(x => x.Key).First().Key;
+        }
+
+
+        private (decimal Total, string Unit) CalculatePlannedTotal(HashSet<string> materialNumbers, string werks)
+        {
+            if (materialNumbers == null || materialNumbers.Count == 0)
+                return (0m, null);
+
+            decimal plannedTotal = 0m;
+            string plannedUnit = null;
+
+            foreach (var matnr in materialNumbers)
+            {
+                var orders = _sapService.GetOpenOrdersForMaterial(matnr, werks, "SL", 0, includeDisplayInfo: true)
+                             ?? new List<OpenOrderId>();
+
+                foreach (var order in orders)
+                {
+                    var qty = order.Quantity ?? 0m;
+                    var delivered = order.Delivered ?? 0m;
+                    var remaining = qty - delivered;
+                    if (remaining < 0m) remaining = 0m;
+
+                    plannedTotal += remaining;
+
+                    var candidateUnit = string.IsNullOrWhiteSpace(order.Unit)
+                        ? order.DeliveredUnit
+                        : order.Unit;
+
+                    if (string.IsNullOrWhiteSpace(candidateUnit))
+                        continue;
+
+                    if (string.IsNullOrWhiteSpace(plannedUnit))
+                    {
+                        plannedUnit = candidateUnit;
+                    }
+                    else if (!string.Equals(plannedUnit, candidateUnit, StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new InvalidOperationException(
+                            "Planned quantity has mixed units for selected materials; cannot return a single PlannedUnit.");
+                    }
+                }
+            }
+
+            return (plannedTotal, plannedUnit);
         }
 
         private List<string[]> ReadTable(string table, string[] fields, string[] options, int rowCount = 0)
