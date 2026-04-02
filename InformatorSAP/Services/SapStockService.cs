@@ -269,27 +269,30 @@ namespace InformatorSAP.Services
                 return (0m, null);
             }
 
-            // 3) JEST batched: keep released orders (I0002 active).
+            // 3) JEST: check active released status (I0002) per OBJNR.
+            // NOTE: avoids long IN(...) OPTION strings that can trigger OPTION_NOT_VALID on some systems.
             var releasedOrders = new HashSet<string>(StringComparer.Ordinal);
             var objToOrder = objByOrder.ToDictionary(k => k.Value, v => v.Key, StringComparer.Ordinal);
             var objList = objByOrder.Values.Distinct().ToList();
-            const int objChunk = 150;
-            for (int i = 0; i < objList.Count; i += objChunk)
+
+            for (int i = 0; i < objList.Count; i++)
             {
-                var slice = objList.Skip(i).Take(objChunk).ToList();
-                var inList = string.Join(",", slice.Select(o => "'" + EscapeForWhere(o) + "'"));
+                var objnr = objList[i];
                 var rows = ReadTable(
                     "JEST",
-                    new[] { "OBJNR", "STAT", "INACT" },
-                    BuildWhereOptions($"OBJNR IN ( {inList} ) AND STAT = 'I0002' AND INACT = ' '"));
+                    new[] { "STAT", "INACT" },
+                    new[] { "OBJNR = '" + EscapeForWhere(objnr) + "'", "AND STAT = 'I0002'", "AND INACT = ' '" });
 
-                foreach (var row in rows)
+                if (rows.Count > 0)
                 {
-                    var objnr = SafeGet(row, 0);
-                    if (string.IsNullOrWhiteSpace(objnr)) continue;
                     string order;
                     if (objToOrder.TryGetValue(objnr, out order))
                         releasedOrders.Add(order);
+                }
+
+                if ((i + 1) % 100 == 0)
+                {
+                    Trace.WriteLine($"[SapStockService] planned JEST progress {i + 1}/{objList.Count}, releasedOrders={releasedOrders.Count}");
                 }
             }
 
