@@ -1,6 +1,5 @@
 using System;
 using System.Web.Http;
-using System.Configuration;
 using InformatorSAP.Services;
 
 namespace InformatorSAP.Controllers
@@ -12,16 +11,10 @@ namespace InformatorSAP.Controllers
 
         [HttpPost]
         [Route("snapshots/refresh")]
-        public IHttpActionResult RefreshSnapshots([FromUri] bool includePlanned = true, [FromUri] string apiKey = null)
+        public IHttpActionResult RefreshSnapshots([FromUri] bool includePlanned = true)
         {
             try
             {
-                var expected = ConfigurationManager.AppSettings["StockRefreshApiKey"];
-                if (!string.IsNullOrWhiteSpace(expected) && !string.Equals(expected, apiKey, StringComparison.Ordinal))
-                {
-                    return Unauthorized();
-                }
-
                 var service = new StockSnapshotService();
                 var processed = service.RefreshNightlySnapshots(includePlanned);
                 return Ok(new { ProcessedTerms = processed, RefreshedAtUtc = DateTime.UtcNow });
