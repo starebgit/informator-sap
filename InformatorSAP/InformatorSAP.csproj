@@ -175,11 +175,14 @@
       <DependentUpon>Global.asax</DependentUpon>
     </Compile>
     <Compile Include="Models\OrderDetailsDtos.cs" />
+    <Compile Include="Models\StockSnapshotRowDto.cs" />
+    <Compile Include="Models\StockTermConfig.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Services\OprStrojService.cs" />
     <Compile Include="Services\OrderDetailsService.cs" />
     <Compile Include="Services\SapService.cs" />
     <Compile Include="Services\SapStockService.cs" />
+    <Compile Include="Services\StockSnapshotService.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />

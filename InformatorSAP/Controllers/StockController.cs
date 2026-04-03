@@ -1,5 +1,6 @@
 using System;
 using System.Web.Http;
+using System.Configuration;
 using InformatorSAP.Services;
 
 namespace InformatorSAP.Controllers
@@ -7,6 +8,46 @@ namespace InformatorSAP.Controllers
     [RoutePrefix("api/stock")]
     public class StockController : ApiController
     {
+
+
+        [HttpPost]
+        [Route("snapshots/refresh")]
+        public IHttpActionResult RefreshSnapshots([FromUri] bool includePlanned = true, [FromUri] string apiKey = null)
+        {
+            try
+            {
+                var expected = ConfigurationManager.AppSettings["StockRefreshApiKey"];
+                if (!string.IsNullOrWhiteSpace(expected) && !string.Equals(expected, apiKey, StringComparison.Ordinal))
+                {
+                    return Unauthorized();
+                }
+
+                var service = new StockSnapshotService();
+                var processed = service.RefreshNightlySnapshots(includePlanned);
+                return Ok(new { ProcessedTerms = processed, RefreshedAtUtc = DateTime.UtcNow });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(ex.Message);
+            }
+        }
+
+        [HttpGet]
+        [Route("snapshots/latest")]
+        public IHttpActionResult LatestSnapshots([FromUri] string werks = null, [FromUri] string lgort = null, [FromUri] int? unitId = null)
+        {
+            try
+            {
+                var service = new StockSnapshotService();
+                var rows = service.GetLatestSnapshots(werks, lgort, unitId);
+                return Ok(rows);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(ex.Message);
+            }
+        }
+
         [HttpGet]
         [Route("{werks}/{lgort}/summary")]
         public IHttpActionResult Summary(string werks, string lgort, [FromUri] string query, [FromUri] bool includePlanned = true)
