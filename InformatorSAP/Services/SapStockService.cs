@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Diagnostics;
 using System.Linq;
+using System.Threading.Tasks;
 using InformatorSAP.Classes;
 using SAP.Middleware.Connector;
 
@@ -16,6 +17,10 @@ namespace InformatorSAP.Services
         private static readonly ConcurrentDictionary<string, CacheEntry> PlannedCache =
             new ConcurrentDictionary<string, CacheEntry>(StringComparer.OrdinalIgnoreCase);
         private static readonly TimeSpan PlannedCacheTtl = TimeSpan.FromMinutes(3);
+        private static readonly ConcurrentDictionary<string, ObjnrReleasedCacheEntry> ObjnrReleasedCache =
+            new ConcurrentDictionary<string, ObjnrReleasedCacheEntry>(StringComparer.Ordinal);
+        private static readonly TimeSpan ObjnrReleasedCacheTtl = TimeSpan.FromMinutes(5);
+        private const int MaxParallelRfcCalls = 3;
 
         public SapStockService()
         {
@@ -44,6 +49,12 @@ namespace InformatorSAP.Services
             public string DeliveredUnit { get; set; }
             public decimal RemainingTotal { get; set; }
             public string RemainingUnit { get; set; }
+        }
+
+        private sealed class ObjnrReleasedCacheEntry
+        {
+            public DateTime CreatedUtc { get; set; }
+            public bool IsReleased { get; set; }
         }
 
         public StockSummaryDto GetUnrestrictedStockSummary(string werks, string lgort, string query, bool includePlanned = true)
@@ -227,57 +238,67 @@ namespace InformatorSAP.Services
             var perOrderDeliveredUnit = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var orderToMaterials = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
             var perMaterialPlanned = new Dictionary<string, decimal>(StringComparer.Ordinal);
+            var afpoSync = new object();
 
             // 1) AFPO batched: get candidate orders (and fallback unit hints).
             var candidateOrders = new HashSet<string>(StringComparer.Ordinal);
             const int matChunk = 30;
+            var matSlices = new List<List<string>>();
             for (int i = 0; i < mats18.Count; i += matChunk)
             {
-                var slice = mats18.Skip(i).Take(matChunk).ToList();
-                var inList = string.Join(",", slice.Select(m => "'" + EscapeForWhere(m) + "'"));
-
-                var rows = ReadTable(
-                    "AFPO",
-                    new[] { "AUFNR", "MATNR", "WEMNG", "MEINS" },
-                    BuildWhereOptions($"DWERK = '{EscapeForWhere(werks)}' AND MATNR IN ( {inList} )"));
-
-                foreach (var row in rows)
-                {
-                    var aufnr = SafeGet(row, 0);
-                    var matnr = SafeGet(row, 1);
-                    var wemngRaw = SafeGet(row, 2);
-                    var meins = SafeGet(row, 3);
-
-                    if (string.IsNullOrWhiteSpace(aufnr) || string.IsNullOrWhiteSpace(matnr))
-                        continue;
-
-                    if (!mats18.Contains(matnr, StringComparer.Ordinal))
-                        continue;
-
-                    candidateOrders.Add(aufnr.PadLeft(12, '0'));
-                    var key = aufnr.PadLeft(12, '0');
-
-                    HashSet<string> matsForOrder;
-                    if (!orderToMaterials.TryGetValue(key, out matsForOrder))
-                    {
-                        matsForOrder = new HashSet<string>(StringComparer.Ordinal);
-                        orderToMaterials[key] = matsForOrder;
-                    }
-                    matsForOrder.Add(matnr);
-
-                    var delivered = ParseQuanScaled(wemngRaw);
-                    if (!perOrderDelivered.ContainsKey(key)) perOrderDelivered[key] = 0m;
-                    perOrderDelivered[key] += delivered;
-
-                    if (!string.IsNullOrWhiteSpace(meins) && !perOrderDeliveredUnit.ContainsKey(key))
-                        perOrderDeliveredUnit[key] = meins;
-
-                    if (!string.IsNullOrWhiteSpace(meins) && !perOrderUnit.ContainsKey(key))
-                        perOrderUnit[key] = meins;
-                }
-
-                Trace.WriteLine($"[SapStockService] planned AFPO chunk {i / matChunk + 1}: rows={rows.Count}, candidateOrders={candidateOrders.Count}");
+                matSlices.Add(mats18.Skip(i).Take(matChunk).ToList());
             }
+
+            Parallel.ForEach(
+                matSlices,
+                new ParallelOptions { MaxDegreeOfParallelism = MaxParallelRfcCalls },
+                slice =>
+                {
+                    var inList = string.Join(",", slice.Select(m => "'" + EscapeForWhere(m) + "'"));
+                    var rows = ReadTable(
+                        "AFPO",
+                        new[] { "AUFNR", "MATNR", "WEMNG", "MEINS" },
+                        BuildWhereOptions($"DWERK = '{EscapeForWhere(werks)}' AND MATNR IN ( {inList} )"));
+
+                    lock (afpoSync)
+                    {
+                        foreach (var row in rows)
+                        {
+                            var aufnr = SafeGet(row, 0);
+                            var matnr = SafeGet(row, 1);
+                            var wemngRaw = SafeGet(row, 2);
+                            var meins = SafeGet(row, 3);
+
+                            if (string.IsNullOrWhiteSpace(aufnr) || string.IsNullOrWhiteSpace(matnr))
+                                continue;
+
+                            if (!mats18.Contains(matnr, StringComparer.Ordinal))
+                                continue;
+
+                            candidateOrders.Add(aufnr.PadLeft(12, '0'));
+                            var key = aufnr.PadLeft(12, '0');
+
+                            HashSet<string> matsForOrder;
+                            if (!orderToMaterials.TryGetValue(key, out matsForOrder))
+                            {
+                                matsForOrder = new HashSet<string>(StringComparer.Ordinal);
+                                orderToMaterials[key] = matsForOrder;
+                            }
+                            matsForOrder.Add(matnr);
+
+                            var delivered = ParseQuanScaled(wemngRaw);
+                            if (!perOrderDelivered.ContainsKey(key)) perOrderDelivered[key] = 0m;
+                            perOrderDelivered[key] += delivered;
+
+                            if (!string.IsNullOrWhiteSpace(meins) && !perOrderDeliveredUnit.ContainsKey(key))
+                                perOrderDeliveredUnit[key] = meins;
+
+                            if (!string.IsNullOrWhiteSpace(meins) && !perOrderUnit.ContainsKey(key))
+                                perOrderUnit[key] = meins;
+                        }
+                    }
+                });
+            Trace.WriteLine($"[SapStockService] planned AFPO chunks={matSlices.Count}, candidateOrders={candidateOrders.Count}");
 
             if (candidateOrders.Count == 0)
             {
@@ -288,24 +309,35 @@ namespace InformatorSAP.Services
             // 2) CAUFV batched: AUFNR -> OBJNR.
             var orderList = candidateOrders.ToList();
             var objByOrder = new Dictionary<string, string>(StringComparer.Ordinal);
+            var caufvSync = new object();
             const int orderChunk = 120;
+            var orderSlices = new List<List<string>>();
             for (int i = 0; i < orderList.Count; i += orderChunk)
             {
-                var slice = orderList.Skip(i).Take(orderChunk).ToList();
-                var inList = string.Join(",", slice.Select(a => "'" + EscapeForWhere(a) + "'"));
-                var rows = ReadTable(
-                    "CAUFV",
-                    new[] { "AUFNR", "OBJNR" },
-                    BuildWhereOptions($"AUFNR IN ( {inList} )"));
-
-                foreach (var row in rows)
-                {
-                    var aufnr = SafeGet(row, 0)?.PadLeft(12, '0');
-                    var objnr = SafeGet(row, 1);
-                    if (!string.IsNullOrWhiteSpace(aufnr) && !string.IsNullOrWhiteSpace(objnr))
-                        objByOrder[aufnr] = objnr;
-                }
+                orderSlices.Add(orderList.Skip(i).Take(orderChunk).ToList());
             }
+            Parallel.ForEach(
+                orderSlices,
+                new ParallelOptions { MaxDegreeOfParallelism = MaxParallelRfcCalls },
+                slice =>
+                {
+                    var inList = string.Join(",", slice.Select(a => "'" + EscapeForWhere(a) + "'"));
+                    var rows = ReadTable(
+                        "CAUFV",
+                        new[] { "AUFNR", "OBJNR" },
+                        BuildWhereOptions($"AUFNR IN ( {inList} )"));
+
+                    lock (caufvSync)
+                    {
+                        foreach (var row in rows)
+                        {
+                            var aufnr = SafeGet(row, 0)?.PadLeft(12, '0');
+                            var objnr = SafeGet(row, 1);
+                            if (!string.IsNullOrWhiteSpace(aufnr) && !string.IsNullOrWhiteSpace(objnr))
+                                objByOrder[aufnr] = objnr;
+                        }
+                    }
+                });
 
             if (objByOrder.Count == 0)
             {
@@ -318,20 +350,32 @@ namespace InformatorSAP.Services
             var releasedOrders = new HashSet<string>(StringComparer.Ordinal);
             var objToOrder = objByOrder.ToDictionary(k => k.Value, v => v.Key, StringComparer.Ordinal);
             var objList = objByOrder.Values.Distinct().ToList();
+            var jestSync = new object();
 
             for (int i = 0; i < objList.Count; i++)
             {
                 var objnr = objList[i];
-                var rows = ReadTable(
-                    "JEST",
-                    new[] { "STAT", "INACT" },
-                    new[] { "OBJNR = '" + EscapeForWhere(objnr) + "'", "AND STAT = 'I0002'", "AND INACT = ' '" });
+                bool isReleased;
+                if (!TryGetCachedObjnrReleased(objnr, out isReleased))
+                {
+                    var rows = ReadTable(
+                        "JEST",
+                        new[] { "STAT", "INACT" },
+                        new[] { "OBJNR = '" + EscapeForWhere(objnr) + "'", "AND STAT = 'I0002'", "AND INACT = ' '" });
+                    isReleased = rows.Count > 0;
+                    SetCachedObjnrReleased(objnr, isReleased);
+                }
 
-                if (rows.Count > 0)
+                if (isReleased)
                 {
                     string order;
                     if (objToOrder.TryGetValue(objnr, out order))
-                        releasedOrders.Add(order);
+                    {
+                        lock (jestSync)
+                        {
+                            releasedOrders.Add(order);
+                        }
+                    }
                 }
 
                 if ((i + 1) % 100 == 0)
@@ -353,70 +397,81 @@ namespace InformatorSAP.Services
             string deliveredUnit = null;
             decimal remainingTotal = 0m;
             var releasedList = releasedOrders.ToList();
+            var afkoSync = new object();
 
+            var releasedSlices = new List<List<string>>();
             for (int i = 0; i < releasedList.Count; i += orderChunk)
             {
-                var slice = releasedList.Skip(i).Take(orderChunk).ToList();
-                var inList = string.Join(",", slice.Select(a => "'" + EscapeForWhere(a) + "'"));
-                var rows = ReadTable(
-                    "AFKO",
-                    new[] { "AUFNR", "GAMNG", "GMEIN" },
-                    BuildWhereOptions($"AUFNR IN ( {inList} )"));
-
-                foreach (var row in rows)
+                releasedSlices.Add(releasedList.Skip(i).Take(orderChunk).ToList());
+            }
+            Parallel.ForEach(
+                releasedSlices,
+                new ParallelOptions { MaxDegreeOfParallelism = MaxParallelRfcCalls },
+                slice =>
                 {
-                    var aufnr = SafeGet(row, 0)?.PadLeft(12, '0');
-                    var gamngRaw = SafeGet(row, 1);
-                    var gmein = SafeGet(row, 2);
-                    if (string.IsNullOrWhiteSpace(aufnr)) continue;
+                    var inList = string.Join(",", slice.Select(a => "'" + EscapeForWhere(a) + "'"));
+                    var rows = ReadTable(
+                        "AFKO",
+                        new[] { "AUFNR", "GAMNG", "GMEIN" },
+                        BuildWhereOptions($"AUFNR IN ( {inList} )"));
 
-                    var planned = ParseQuanScaled(gamngRaw);
-                    plannedTotal += planned;
-
-                    decimal deliveredForOrder;
-                    if (!perOrderDelivered.TryGetValue(aufnr, out deliveredForOrder)) deliveredForOrder = 0m;
-                    deliveredTotal += deliveredForOrder;
-
-                    var remaining = planned - deliveredForOrder;
-                    if (remaining < 0m) remaining = 0m;
-                    remainingTotal += remaining;
-
-                    var deliveredUnitCandidate = perOrderDeliveredUnit.ContainsKey(aufnr) ? perOrderDeliveredUnit[aufnr] : null;
-                    if (!string.IsNullOrWhiteSpace(deliveredUnitCandidate))
+                    lock (afkoSync)
                     {
-                        if (string.IsNullOrWhiteSpace(deliveredUnit)) deliveredUnit = deliveredUnitCandidate;
-                        else if (!string.Equals(deliveredUnit, deliveredUnitCandidate, StringComparison.OrdinalIgnoreCase))
-                            throw new InvalidOperationException("Delivered quantity has mixed units for selected materials; cannot return a single DeliveredUnit.");
-                    }
-
-                    HashSet<string> matsForOrder;
-                    if (orderToMaterials.TryGetValue(aufnr, out matsForOrder))
-                    {
-                        foreach (var mat in matsForOrder)
+                        foreach (var row in rows)
                         {
-                            if (!perMaterialPlanned.ContainsKey(mat)) perMaterialPlanned[mat] = 0m;
-                            perMaterialPlanned[mat] += planned;
+                            var aufnr = SafeGet(row, 0)?.PadLeft(12, '0');
+                            var gamngRaw = SafeGet(row, 1);
+                            var gmein = SafeGet(row, 2);
+                            if (string.IsNullOrWhiteSpace(aufnr)) continue;
+
+                            var planned = ParseQuanScaled(gamngRaw);
+                            plannedTotal += planned;
+
+                            decimal deliveredForOrder;
+                            if (!perOrderDelivered.TryGetValue(aufnr, out deliveredForOrder)) deliveredForOrder = 0m;
+                            deliveredTotal += deliveredForOrder;
+
+                            var remaining = planned - deliveredForOrder;
+                            if (remaining < 0m) remaining = 0m;
+                            remainingTotal += remaining;
+
+                            var deliveredUnitCandidate = perOrderDeliveredUnit.ContainsKey(aufnr) ? perOrderDeliveredUnit[aufnr] : null;
+                            if (!string.IsNullOrWhiteSpace(deliveredUnitCandidate))
+                            {
+                                if (string.IsNullOrWhiteSpace(deliveredUnit)) deliveredUnit = deliveredUnitCandidate;
+                                else if (!string.Equals(deliveredUnit, deliveredUnitCandidate, StringComparison.OrdinalIgnoreCase))
+                                    throw new InvalidOperationException("Delivered quantity has mixed units for selected materials; cannot return a single DeliveredUnit.");
+                            }
+
+                            HashSet<string> matsForOrder;
+                            if (orderToMaterials.TryGetValue(aufnr, out matsForOrder))
+                            {
+                                foreach (var mat in matsForOrder)
+                                {
+                                    if (!perMaterialPlanned.ContainsKey(mat)) perMaterialPlanned[mat] = 0m;
+                                    perMaterialPlanned[mat] += planned;
+                                }
+                            }
+
+                            var candidateUnit = !string.IsNullOrWhiteSpace(gmein)
+                                ? gmein
+                                : (perOrderUnit.ContainsKey(aufnr) ? perOrderUnit[aufnr] : null);
+
+                            if (string.IsNullOrWhiteSpace(candidateUnit))
+                                continue;
+
+                            if (string.IsNullOrWhiteSpace(plannedUnit))
+                            {
+                                plannedUnit = candidateUnit;
+                            }
+                            else if (!string.Equals(plannedUnit, candidateUnit, StringComparison.OrdinalIgnoreCase))
+                            {
+                                throw new InvalidOperationException(
+                                    "Planned quantity has mixed units for selected materials; cannot return a single PlannedUnit.");
+                            }
                         }
                     }
-
-                    var candidateUnit = !string.IsNullOrWhiteSpace(gmein)
-                        ? gmein
-                        : (perOrderUnit.ContainsKey(aufnr) ? perOrderUnit[aufnr] : null);
-
-                    if (string.IsNullOrWhiteSpace(candidateUnit))
-                        continue;
-
-                    if (string.IsNullOrWhiteSpace(plannedUnit))
-                    {
-                        plannedUnit = candidateUnit;
-                    }
-                    else if (!string.Equals(plannedUnit, candidateUnit, StringComparison.OrdinalIgnoreCase))
-                    {
-                        throw new InvalidOperationException(
-                            "Planned quantity has mixed units for selected materials; cannot return a single PlannedUnit.");
-                    }
-                }
-            }
+                });
 
             foreach (var kv in perMaterialPlanned.OrderBy(x => x.Key, StringComparer.Ordinal))
             {
@@ -481,6 +536,26 @@ namespace InformatorSAP.Services
                 parts.Add(line.Substring(i, Math.Min(72, line.Length - i)));
             }
             return parts.ToArray();
+        }
+
+        private static bool TryGetCachedObjnrReleased(string objnr, out bool isReleased)
+        {
+            isReleased = false;
+            ObjnrReleasedCacheEntry cached;
+            if (!ObjnrReleasedCache.TryGetValue(objnr, out cached)) return false;
+            if (DateTime.UtcNow - cached.CreatedUtc > ObjnrReleasedCacheTtl) return false;
+
+            isReleased = cached.IsReleased;
+            return true;
+        }
+
+        private static void SetCachedObjnrReleased(string objnr, bool isReleased)
+        {
+            ObjnrReleasedCache[objnr] = new ObjnrReleasedCacheEntry
+            {
+                CreatedUtc = DateTime.UtcNow,
+                IsReleased = isReleased
+            };
         }
 
         private List<string[]> ReadTable(string table, string[] fields, string[] options, int rowCount = 0)
