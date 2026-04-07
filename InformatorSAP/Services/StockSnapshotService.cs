@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Configuration;
 using System.Data;
 using System.Data.SqlClient;
+using System.Diagnostics;
 using InformatorSAP.Models;
 
 namespace InformatorSAP.Services
@@ -28,6 +29,27 @@ namespace InformatorSAP.Services
             var sapStockService = new SapStockService();
             var nowUtc = DateTime.UtcNow;
             var dayRange = GetLjubljanaUtcDayRange(nowUtc);
+            var preparedSnapshots = new List<Tuple<StockTermConfig, Classes.StockSummaryDto>>(terms.Count);
+
+            foreach (var term in terms)
+            {
+                try
+                {
+                    var summary = sapStockService.GetUnrestrictedStockSummary(
+                        term.Werks,
+                        term.Lgort,
+                        term.ContainsText,
+                        includePlanned);
+
+                    preparedSnapshots.Add(Tuple.Create(term, summary));
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine(
+                        $"[StockSnapshotService] Failed to refresh term_id={term.TermId}, query={term.ContainsText}, werks={term.Werks}, lgort={term.Lgort}. Exception: {ex}");
+                    throw;
+                }
+            }
 
             using (var conn = new SqlConnection(_connString))
             {
@@ -36,15 +58,9 @@ namespace InformatorSAP.Services
                 {
                     DeleteRowsForUtcRange(conn, tx, dayRange.Item1, dayRange.Item2);
 
-                    foreach (var term in terms)
+                    foreach (var snapshot in preparedSnapshots)
                     {
-                        var summary = sapStockService.GetUnrestrictedStockSummary(
-                            term.Werks,
-                            term.Lgort,
-                            term.ContainsText,
-                            includePlanned);
-
-                        InsertSnapshot(conn, tx, term, summary, nowUtc);
+                        InsertSnapshot(conn, tx, snapshot.Item1, snapshot.Item2, nowUtc);
                     }
 
                     tx.Commit();
