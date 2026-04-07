@@ -3,6 +3,10 @@ using System.Collections.Generic;
 using System.Configuration;
 using System.Data;
 using System.Data.SqlClient;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Web.Hosting;
 using InformatorSAP.Models;
 
 namespace InformatorSAP.Services
@@ -28,6 +32,40 @@ namespace InformatorSAP.Services
             var sapStockService = new SapStockService();
             var nowUtc = DateTime.UtcNow;
             var dayRange = GetLjubljanaUtcDayRange(nowUtc);
+            var preparedSnapshots = new List<Tuple<StockTermConfig, Classes.StockSummaryDto>>(terms.Count);
+
+            foreach (var term in terms)
+            {
+                try
+                {
+                    var summary = sapStockService.GetUnrestrictedStockSummary(
+                        term.Werks,
+                        term.Lgort,
+                        term.ContainsText,
+                        includePlanned);
+
+                    preparedSnapshots.Add(Tuple.Create(term, summary));
+                }
+                catch (Exception ex)
+                {
+                    var context =
+                        $"term_id={term.TermId}, query={term.ContainsText}, werks={term.Werks}, lgort={term.Lgort}, includePlanned={includePlanned}";
+                    if (HasMixedUnitException(ex))
+                    {
+                        var mixedUnitMessage =
+                            $"[StockSnapshotService] Skipping term due to mixed units. {context}. RootError={GetInnermostMessage(ex)}";
+                        Trace.TraceWarning(mixedUnitMessage);
+                        AppendRefreshLog(mixedUnitMessage);
+                        continue;
+                    }
+
+                    var fatalMessage =
+                        $"[StockSnapshotService] Failed to refresh term. {context}. Exception={ex}";
+                    Trace.TraceError(fatalMessage);
+                    AppendRefreshLog(fatalMessage);
+                    throw;
+                }
+            }
 
             using (var conn = new SqlConnection(_connString))
             {
@@ -36,22 +74,16 @@ namespace InformatorSAP.Services
                 {
                     DeleteRowsForUtcRange(conn, tx, dayRange.Item1, dayRange.Item2);
 
-                    foreach (var term in terms)
+                    foreach (var snapshot in preparedSnapshots)
                     {
-                        var summary = sapStockService.GetUnrestrictedStockSummary(
-                            term.Werks,
-                            term.Lgort,
-                            term.ContainsText,
-                            includePlanned);
-
-                        InsertSnapshot(conn, tx, term, summary, nowUtc);
+                        InsertSnapshot(conn, tx, snapshot.Item1, snapshot.Item2, nowUtc);
                     }
 
                     tx.Commit();
                 }
             }
 
-            return terms.Count;
+            return preparedSnapshots.Count;
         }
 
         public List<StockSnapshotRowDto> GetLatestSnapshots(string werks = null, string lgort = null, int? unitId = null)
@@ -282,6 +314,70 @@ VALUES
             }
 
             return value.Trim();
+        }
+
+        private static bool HasMixedUnitException(Exception ex)
+        {
+            if (ex == null)
+            {
+                return false;
+            }
+
+            if (ex is InvalidOperationException &&
+                ex.Message != null &&
+                ex.Message.IndexOf("mixed unit", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return true;
+            }
+
+            var aggregate = ex as AggregateException;
+            if (aggregate != null)
+            {
+                return aggregate.Flatten().InnerExceptions.Any(HasMixedUnitException);
+            }
+
+            return HasMixedUnitException(ex.InnerException);
+        }
+
+        private static string GetInnermostMessage(Exception ex)
+        {
+            var cursor = ex;
+            while (cursor != null && cursor.InnerException != null)
+            {
+                cursor = cursor.InnerException;
+            }
+
+            return cursor != null ? cursor.Message : string.Empty;
+        }
+
+        private static void AppendRefreshLog(string line)
+        {
+            try
+            {
+                var path = ResolveRefreshLogPath();
+                var directory = Path.GetDirectoryName(path);
+                if (!string.IsNullOrWhiteSpace(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                }
+
+                File.AppendAllText(path, $"[{DateTime.UtcNow:O}] {line}{Environment.NewLine}");
+            }
+            catch
+            {
+                // logging must never break refresh flow
+            }
+        }
+
+        private static string ResolveRefreshLogPath()
+        {
+            var hostedPath = HostingEnvironment.MapPath("~/App_Data/stock-snapshot-refresh.log");
+            if (!string.IsNullOrWhiteSpace(hostedPath))
+            {
+                return hostedPath;
+            }
+
+            return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Logs", "stock-snapshot-refresh.log");
         }
     }
 }
