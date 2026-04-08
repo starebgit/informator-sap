@@ -11,5 +11,4 @@
     public string StatusSistema { get; set; }
     public string NajZag { get; set; }  // AFKO-GSTRS formatted dd.MM.yyyy
     public string LongText { get; set; }
-    public string WarningLog { get; set; }
 }
