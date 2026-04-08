@@ -913,6 +913,8 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
                 : "";
         }
         var gstrsByAufnr = new Dictionary<string, string>(StringComparer.Ordinal);
+        var longTextByAufnr = new Dictionary<string, string>(StringComparer.Ordinal);
+        string longTextWarning = null;
 
                 // ---------- helpers ----------
                 IRfcTable ReadTable(string table, int rowCount,
@@ -1253,7 +1255,132 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
         }
         STEP("MAKT batch", $"materials={materials.Count}; texts={mtexts.Count}");
 
-        // ---------- 8) Build result rows ----------
+        // ---------- 8) RFC_READ_TEXT -> order long text (AUFK/KOPF), batch for all allowed ----------
+        if (allowed.Count > 0)
+        {
+            try
+            {
+                string NormalizeTextLang(string raw)
+                {
+                    var t = (raw ?? "").Trim().ToUpperInvariant();
+                    if (t == "SI") return "SL";
+                    if (t == "EN") return "EN";
+                    if (t == "SL") return "SL";
+                    return "SL";
+                }
+
+                void ReadLongTextForLang(IEnumerable<string> aufnrs, string textLang)
+                {
+                    const int chunk = 120;
+                    var list = aufnrs.Distinct(StringComparer.Ordinal).ToList();
+
+                    for (int i = 0; i < list.Count; i += chunk)
+                    {
+                        var slice = list.Skip(i).Take(chunk).ToList();
+                        if (slice.Count == 0) continue;
+
+                        var funcReadText = repo.CreateFunction("RFC_READ_TEXT");
+                        var textLines = funcReadText.GetTable("TEXT_LINES");
+                        var requestedTdNames = new HashSet<string>(StringComparer.Ordinal);
+                        foreach (var auf in slice)
+                        {
+                            var plainTdName = auf;
+                            if (requestedTdNames.Add(plainTdName))
+                            {
+                                textLines.Append();
+                                textLines.SetValue("TDOBJECT", "AUFK");
+                                textLines.SetValue("TDNAME", plainTdName);
+                                textLines.SetValue("TDID", "KOPF");
+                                textLines.SetValue("TDSPRAS", textLang);
+                            }
+
+                            // In this SAP system, order text TDNAME can be stored as MANDT(3)+AUFNR(12), e.g. 101000006712792.
+                            var clientPrefixedTdName = "101" + auf;
+                            if (requestedTdNames.Add(clientPrefixedTdName))
+                            {
+                                textLines.Append();
+                                textLines.SetValue("TDOBJECT", "AUFK");
+                                textLines.SetValue("TDNAME", clientPrefixedTdName);
+                                textLines.SetValue("TDID", "KOPF");
+                                textLines.SetValue("TDSPRAS", textLang);
+                            }
+                        }
+
+                        funcReadText.Invoke(dest);
+                        System.Diagnostics.Trace.WriteLine(
+                            $"[GetOrdersByWorkCenter][RFC_READ_TEXT] lang={textLang}; requested={requestedTdNames.Count}; returnedRows={textLines.RowCount}");
+
+                        var linesByOrder = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+                        for (int r = 0; r < textLines.RowCount; r++)
+                        {
+                            var tdname = (textLines[r].GetString("TDNAME") ?? "").Trim();
+                            string key;
+                            if (tdname.Length >= 12)
+                                key = tdname.Substring(tdname.Length - 12, 12);
+                            else
+                                key = tdname.PadLeft(12, '0');
+
+                            var line = textLines[r].GetString("TDLINE") ?? "";
+                            if (string.IsNullOrWhiteSpace(key)) continue;
+                            if (!linesByOrder.TryGetValue(key, out var lines))
+                            {
+                                lines = new List<string>();
+                                linesByOrder[key] = lines;
+                            }
+                            lines.Add(line);
+                        }
+
+                        foreach (var kv in linesByOrder)
+                        {
+                            if (longTextByAufnr.ContainsKey(kv.Key)) continue;
+                            var joined = string.Join(Environment.NewLine, kv.Value);
+                            if (!string.IsNullOrWhiteSpace(joined))
+                                longTextByAufnr[kv.Key] = joined;
+                        }
+                        System.Diagnostics.Trace.WriteLine(
+                            $"[GetOrdersByWorkCenter][RFC_READ_TEXT] lang={textLang}; mappedOrders={linesByOrder.Count}; accumulatedTexts={longTextByAufnr.Count}");
+                    }
+                }
+
+                var primaryTextLang = NormalizeTextLang(language);
+                var textLangTryOrder = new List<string>();
+                void AddLang(string langCode)
+                {
+                    if (string.IsNullOrWhiteSpace(langCode)) return;
+                    if (!textLangTryOrder.Contains(langCode, StringComparer.OrdinalIgnoreCase))
+                        textLangTryOrder.Add(langCode);
+                }
+
+                if (string.Equals(primaryTextLang, "EN", StringComparison.Ordinal))
+                {
+                    AddLang("EN"); // external language key form
+                    AddLang("E");  // SAP internal one-char key form
+                }
+                else
+                {
+                    AddLang("SL"); // external language key form
+                    AddLang("5");  // SAP internal one-char key form for Slovenian
+                    AddLang("EN"); // fallback external
+                    AddLang("E");  // fallback internal
+                }
+
+                foreach (var langCode in textLangTryOrder)
+                {
+                    var missingLongTextOrders = allowed.Where(a => !longTextByAufnr.ContainsKey(a)).ToList();
+                    if (missingLongTextOrders.Count == 0) break;
+                    ReadLongTextForLang(missingLongTextOrders, langCode);
+                }
+            }
+            catch (Exception ex)
+            {
+                longTextWarning = "Failed to fetch order long text via RFC_READ_TEXT: " + ex.Message;
+                System.Diagnostics.Trace.WriteLine(
+                    $"[GetOrdersByWorkCenter][RFC_READ_TEXT] ERROR: {ex.Message}");
+            }
+        }
+        STEP("RFC_READ_TEXT (long text)", $"texts={longTextByAufnr.Count}");
+
+        // ---------- 9) Build result rows ----------
         // Emit ONLY up to 'take'; if fewer available, emit all available.
         int emitted = 0;
         for (int i = 0; i < orderHeader.RowCount; i++)
@@ -1295,7 +1422,9 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
                 EM = unit,
                 KratkiTekstMateriala = matText,
                 StatusSistema = statusText ?? "",
-                NajZag = najZag
+                NajZag = najZag,
+                LongText = longTextByAufnr.TryGetValue(aufnr, out var longText) ? longText : null,
+                WarningLog = longTextWarning
             });
 
             emitted++;
