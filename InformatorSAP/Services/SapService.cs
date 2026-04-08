@@ -1281,13 +1281,29 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
 
                         var funcReadText = repo.CreateFunction("RFC_READ_TEXT");
                         var textLines = funcReadText.GetTable("TEXT_LINES");
+                        var requestedTdNames = new HashSet<string>(StringComparer.Ordinal);
                         foreach (var auf in slice)
                         {
-                            textLines.Append();
-                            textLines.SetValue("TDOBJECT", "AUFK");
-                            textLines.SetValue("TDNAME", auf);
-                            textLines.SetValue("TDID", "KOPF");
-                            textLines.SetValue("TDSPRAS", textLang);
+                            var plainTdName = auf;
+                            if (requestedTdNames.Add(plainTdName))
+                            {
+                                textLines.Append();
+                                textLines.SetValue("TDOBJECT", "AUFK");
+                                textLines.SetValue("TDNAME", plainTdName);
+                                textLines.SetValue("TDID", "KOPF");
+                                textLines.SetValue("TDSPRAS", textLang);
+                            }
+
+                            // In this SAP system, order text TDNAME can be stored as MANDT(3)+AUFNR(12), e.g. 101000006712792.
+                            var clientPrefixedTdName = "101" + auf;
+                            if (requestedTdNames.Add(clientPrefixedTdName))
+                            {
+                                textLines.Append();
+                                textLines.SetValue("TDOBJECT", "AUFK");
+                                textLines.SetValue("TDNAME", clientPrefixedTdName);
+                                textLines.SetValue("TDID", "KOPF");
+                                textLines.SetValue("TDSPRAS", textLang);
+                            }
                         }
 
                         funcReadText.Invoke(dest);
@@ -1295,7 +1311,13 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
                         var linesByOrder = new Dictionary<string, List<string>>(StringComparer.Ordinal);
                         for (int r = 0; r < textLines.RowCount; r++)
                         {
-                            var key = (textLines[r].GetString("TDNAME") ?? "").Trim().PadLeft(12, '0');
+                            var tdname = (textLines[r].GetString("TDNAME") ?? "").Trim();
+                            string key;
+                            if (tdname.Length >= 12)
+                                key = tdname.Substring(tdname.Length - 12, 12);
+                            else
+                                key = tdname.PadLeft(12, '0');
+
                             var line = textLines[r].GetString("TDLINE") ?? "";
                             if (string.IsNullOrWhiteSpace(key)) continue;
                             if (!linesByOrder.TryGetValue(key, out var lines))
