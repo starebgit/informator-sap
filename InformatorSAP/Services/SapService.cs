@@ -914,7 +914,6 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
         }
         var gstrsByAufnr = new Dictionary<string, string>(StringComparer.Ordinal);
         var longTextByAufnr = new Dictionary<string, string>(StringComparer.Ordinal);
-        string longTextWarning = null;
 
                 // ---------- helpers ----------
                 IRfcTable ReadTable(string table, int rowCount,
@@ -1263,10 +1262,8 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
                 string NormalizeTextLang(string raw)
                 {
                     var t = (raw ?? "").Trim().ToUpperInvariant();
-                    if (t == "SI") return "SL";
-                    if (t == "EN") return "EN";
-                    if (t == "SL") return "SL";
-                    return "SL";
+                    if (t == "EN") return "E";
+                    return "5"; // Slovenian in SAP internal one-char format
                 }
 
                 void ReadLongTextForLang(IEnumerable<string> aufnrs, string textLang)
@@ -1281,34 +1278,20 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
 
                         var funcReadText = repo.CreateFunction("RFC_READ_TEXT");
                         var textLines = funcReadText.GetTable("TEXT_LINES");
-                        var requestedTdNames = new HashSet<string>(StringComparer.Ordinal);
                         foreach (var auf in slice)
                         {
-                            var plainTdName = auf;
-                            if (requestedTdNames.Add(plainTdName))
-                            {
-                                textLines.Append();
-                                textLines.SetValue("TDOBJECT", "AUFK");
-                                textLines.SetValue("TDNAME", plainTdName);
-                                textLines.SetValue("TDID", "KOPF");
-                                textLines.SetValue("TDSPRAS", textLang);
-                            }
-
-                            // In this SAP system, order text TDNAME can be stored as MANDT(3)+AUFNR(12), e.g. 101000006712792.
-                            var clientPrefixedTdName = "101" + auf;
-                            if (requestedTdNames.Add(clientPrefixedTdName))
-                            {
-                                textLines.Append();
-                                textLines.SetValue("TDOBJECT", "AUFK");
-                                textLines.SetValue("TDNAME", clientPrefixedTdName);
-                                textLines.SetValue("TDID", "KOPF");
-                                textLines.SetValue("TDSPRAS", textLang);
-                            }
+                            // SAP instruction (Tobias): TDNAME = MANDT(3)+AUFNR(12), e.g. 101000008469376.
+                            var tdName = "101" + auf;
+                            textLines.Append();
+                            textLines.SetValue("TDOBJECT", "AUFK");
+                            textLines.SetValue("TDNAME", tdName);
+                            textLines.SetValue("TDID", "KOPF");
+                            textLines.SetValue("TDSPRAS", textLang);
                         }
 
                         funcReadText.Invoke(dest);
                         System.Diagnostics.Trace.WriteLine(
-                            $"[GetOrdersByWorkCenter][RFC_READ_TEXT] lang={textLang}; requested={requestedTdNames.Count}; returnedRows={textLines.RowCount}");
+                            $"[GetOrdersByWorkCenter][RFC_READ_TEXT] lang={textLang}; requested={slice.Count}; returnedRows={textLines.RowCount}");
 
                         var linesByOrder = new Dictionary<string, List<string>>(StringComparer.Ordinal);
                         for (int r = 0; r < textLines.RowCount; r++)
@@ -1333,7 +1316,7 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
                         foreach (var kv in linesByOrder)
                         {
                             if (longTextByAufnr.ContainsKey(kv.Key)) continue;
-                            var joined = string.Join(Environment.NewLine, kv.Value);
+                            var joined = string.Join(Environment.NewLine, kv.Value).Trim('\r', '\n');
                             if (!string.IsNullOrWhiteSpace(joined))
                                 longTextByAufnr[kv.Key] = joined;
                         }
@@ -1351,17 +1334,14 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
                         textLangTryOrder.Add(langCode);
                 }
 
-                if (string.Equals(primaryTextLang, "EN", StringComparison.Ordinal))
+                if (string.Equals(primaryTextLang, "E", StringComparison.Ordinal))
                 {
-                    AddLang("EN"); // external language key form
-                    AddLang("E");  // SAP internal one-char key form
+                    AddLang("E");
                 }
                 else
                 {
-                    AddLang("SL"); // external language key form
-                    AddLang("5");  // SAP internal one-char key form for Slovenian
-                    AddLang("EN"); // fallback external
-                    AddLang("E");  // fallback internal
+                    AddLang("5");
+                    AddLang("E"); // fallback to English
                 }
 
                 foreach (var langCode in textLangTryOrder)
@@ -1373,7 +1353,6 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
             }
             catch (Exception ex)
             {
-                longTextWarning = "Failed to fetch order long text via RFC_READ_TEXT: " + ex.Message;
                 System.Diagnostics.Trace.WriteLine(
                     $"[GetOrdersByWorkCenter][RFC_READ_TEXT] ERROR: {ex.Message}");
             }
@@ -1423,8 +1402,7 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
                 KratkiTekstMateriala = matText,
                 StatusSistema = statusText ?? "",
                 NajZag = najZag,
-                LongText = longTextByAufnr.TryGetValue(aufnr, out var longText) ? longText : null,
-                WarningLog = longTextWarning
+                LongText = longTextByAufnr.TryGetValue(aufnr, out var longText) ? longText : null
             });
 
             emitted++;
