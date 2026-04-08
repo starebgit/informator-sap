@@ -171,6 +171,96 @@ ORDER BY unit_id, [query];";
             return result;
         }
 
+        public List<StockSnapshotRowDto> GetSnapshotsForDate(DateTime localDate, int? unitId = null, string werks = null, string lgort = null)
+        {
+            var result = new List<StockSnapshotRowDto>();
+            var dayRange = GetLjubljanaUtcRangeForLocalDate(localDate);
+
+            using (var conn = new SqlConnection(_connString))
+            using (var cmd = conn.CreateCommand())
+            {
+                cmd.CommandText = @"
+;WITH day_rows AS (
+    SELECT
+        snapshot_id,
+        term_id,
+        werks,
+        lgort,
+        [query],
+        total,
+        unit_id,
+        unit,
+        planned_total,
+        planned_unit,
+        delivered_total,
+        delivered_unit,
+        planned_minus_delivered_total,
+        planned_minus_delivered_unit,
+        retrieved_at_utc,
+        ROW_NUMBER() OVER (PARTITION BY term_id ORDER BY retrieved_at_utc DESC, snapshot_id DESC) AS rn
+    FROM informator.dbo.stock_summary_snapshot
+    WHERE retrieved_at_utc >= @from_utc
+      AND retrieved_at_utc < @to_utc
+)
+SELECT
+    snapshot_id,
+    term_id,
+    werks,
+    lgort,
+    [query],
+    total,
+    unit_id,
+    unit,
+    planned_total,
+    planned_unit,
+    delivered_total,
+    delivered_unit,
+    planned_minus_delivered_total,
+    planned_minus_delivered_unit,
+    retrieved_at_utc
+FROM day_rows
+WHERE rn = 1
+  AND (@werks IS NULL OR werks = @werks)
+  AND (@lgort IS NULL OR lgort = @lgort)
+  AND (@unit_id IS NULL OR unit_id = @unit_id)
+ORDER BY unit_id, [query];";
+
+                cmd.Parameters.Add("@from_utc", SqlDbType.DateTime2).Value = dayRange.Item1;
+                cmd.Parameters.Add("@to_utc", SqlDbType.DateTime2).Value = dayRange.Item2;
+                cmd.Parameters.Add("@werks", SqlDbType.NVarChar, 4).Value = (object)NormalizeNullable(werks) ?? DBNull.Value;
+                cmd.Parameters.Add("@lgort", SqlDbType.NVarChar, 4).Value = (object)NormalizeNullable(lgort) ?? DBNull.Value;
+                cmd.Parameters.Add("@unit_id", SqlDbType.Int).Value = (object)unitId ?? DBNull.Value;
+
+                conn.Open();
+                using (var rdr = cmd.ExecuteReader())
+                {
+                    while (rdr.Read())
+                    {
+                        result.Add(new StockSnapshotRowDto
+                        {
+                            SnapshotId = rdr.GetInt64(0),
+                            TermId = rdr.GetInt32(1),
+                            Werks = rdr.GetString(2),
+                            Lgort = rdr.GetString(3),
+                            Query = rdr.GetString(4),
+                            Total = rdr.GetDecimal(5),
+                            UnitId = rdr.GetInt32(6),
+                            Unit = rdr.IsDBNull(7) ? null : rdr.GetString(7),
+                            PlannedTotal = rdr.GetDecimal(8),
+                            PlannedUnit = rdr.IsDBNull(9) ? null : rdr.GetString(9),
+                            DeliveredTotal = rdr.GetDecimal(10),
+                            DeliveredUnit = rdr.IsDBNull(11) ? null : rdr.GetString(11),
+                            PlannedMinusDeliveredTotal = rdr.GetDecimal(12),
+                            PlannedMinusDeliveredUnit = rdr.IsDBNull(13) ? null : rdr.GetString(13),
+                            RetrievedAtUtc = rdr.GetDateTime(14)
+                        });
+                    }
+                }
+            }
+
+            return result;
+        }
+
         private List<StockTermConfig> GetActiveTerms()
         {
             var result = new List<StockTermConfig>();
@@ -300,6 +390,16 @@ VALUES
             var tz = TimeZoneInfo.FindSystemTimeZoneById("Central Europe Standard Time");
             var local = TimeZoneInfo.ConvertTimeFromUtc(utcNow, tz);
             var localDayStart = local.Date;
+            var localDayEnd = localDayStart.AddDays(1);
+            var utcStart = TimeZoneInfo.ConvertTimeToUtc(localDayStart, tz);
+            var utcEnd = TimeZoneInfo.ConvertTimeToUtc(localDayEnd, tz);
+            return Tuple.Create(utcStart, utcEnd);
+        }
+
+        private static Tuple<DateTime, DateTime> GetLjubljanaUtcRangeForLocalDate(DateTime localDate)
+        {
+            var tz = TimeZoneInfo.FindSystemTimeZoneById("Central Europe Standard Time");
+            var localDayStart = DateTime.SpecifyKind(localDate.Date, DateTimeKind.Unspecified);
             var localDayEnd = localDayStart.AddDays(1);
             var utcStart = TimeZoneInfo.ConvertTimeToUtc(localDayStart, tz);
             var utcEnd = TimeZoneInfo.ConvertTimeToUtc(localDayEnd, tz);

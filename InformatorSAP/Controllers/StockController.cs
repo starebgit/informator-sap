@@ -42,6 +42,22 @@ namespace InformatorSAP.Controllers
         }
 
         [HttpGet]
+        [Route("snapshots/by-date")]
+        public IHttpActionResult SnapshotsByDate([FromUri] DateTime date, [FromUri] int? unitId = null, [FromUri] string werks = null, [FromUri] string lgort = null)
+        {
+            try
+            {
+                var service = new StockSnapshotService();
+                var rows = service.GetSnapshotsForDate(date, unitId, werks, lgort);
+                return Ok(rows);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(ex.Message);
+            }
+        }
+
+        [HttpGet]
         [Route("{werks}/{lgort}/summary")]
         public IHttpActionResult Summary(string werks, string lgort, [FromUri] string query, [FromUri] bool includePlanned = true)
         {
