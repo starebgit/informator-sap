@@ -1307,6 +1307,8 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
                         }
 
                         funcReadText.Invoke(dest);
+                        System.Diagnostics.Trace.WriteLine(
+                            $"[GetOrdersByWorkCenter][RFC_READ_TEXT] lang={textLang}; requested={requestedTdNames.Count}; returnedRows={textLines.RowCount}");
 
                         var linesByOrder = new Dictionary<string, List<string>>(StringComparer.Ordinal);
                         for (int r = 0; r < textLines.RowCount; r++)
@@ -1335,19 +1337,45 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
                             if (!string.IsNullOrWhiteSpace(joined))
                                 longTextByAufnr[kv.Key] = joined;
                         }
+                        System.Diagnostics.Trace.WriteLine(
+                            $"[GetOrdersByWorkCenter][RFC_READ_TEXT] lang={textLang}; mappedOrders={linesByOrder.Count}; accumulatedTexts={longTextByAufnr.Count}");
                     }
                 }
 
                 var primaryTextLang = NormalizeTextLang(language);
-                ReadLongTextForLang(allowed, primaryTextLang);
+                var textLangTryOrder = new List<string>();
+                void AddLang(string langCode)
+                {
+                    if (string.IsNullOrWhiteSpace(langCode)) return;
+                    if (!textLangTryOrder.Contains(langCode, StringComparer.OrdinalIgnoreCase))
+                        textLangTryOrder.Add(langCode);
+                }
 
-                var missingLongTextOrders = allowed.Where(a => !longTextByAufnr.ContainsKey(a)).ToList();
-                if (missingLongTextOrders.Count > 0 && !string.Equals(primaryTextLang, "EN", StringComparison.Ordinal))
-                    ReadLongTextForLang(missingLongTextOrders, "EN");
+                if (string.Equals(primaryTextLang, "EN", StringComparison.Ordinal))
+                {
+                    AddLang("EN"); // external language key form
+                    AddLang("E");  // SAP internal one-char key form
+                }
+                else
+                {
+                    AddLang("SL"); // external language key form
+                    AddLang("5");  // SAP internal one-char key form for Slovenian
+                    AddLang("EN"); // fallback external
+                    AddLang("E");  // fallback internal
+                }
+
+                foreach (var langCode in textLangTryOrder)
+                {
+                    var missingLongTextOrders = allowed.Where(a => !longTextByAufnr.ContainsKey(a)).ToList();
+                    if (missingLongTextOrders.Count == 0) break;
+                    ReadLongTextForLang(missingLongTextOrders, langCode);
+                }
             }
             catch (Exception ex)
             {
                 longTextWarning = "Failed to fetch order long text via RFC_READ_TEXT: " + ex.Message;
+                System.Diagnostics.Trace.WriteLine(
+                    $"[GetOrdersByWorkCenter][RFC_READ_TEXT] ERROR: {ex.Message}");
             }
         }
         STEP("RFC_READ_TEXT (long text)", $"texts={longTextByAufnr.Count}");
