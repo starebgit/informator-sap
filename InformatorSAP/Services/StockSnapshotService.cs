@@ -3,6 +3,10 @@ using System.Collections.Generic;
 using System.Configuration;
 using System.Data;
 using System.Data.SqlClient;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Web.Hosting;
 using InformatorSAP.Models;
 
 namespace InformatorSAP.Services
@@ -28,6 +32,40 @@ namespace InformatorSAP.Services
             var sapStockService = new SapStockService();
             var nowUtc = DateTime.UtcNow;
             var dayRange = GetLjubljanaUtcDayRange(nowUtc);
+            var preparedSnapshots = new List<Tuple<StockTermConfig, Classes.StockSummaryDto>>(terms.Count);
+
+            foreach (var term in terms)
+            {
+                try
+                {
+                    var summary = sapStockService.GetUnrestrictedStockSummary(
+                        term.Werks,
+                        term.Lgort,
+                        term.ContainsText,
+                        includePlanned);
+
+                    preparedSnapshots.Add(Tuple.Create(term, summary));
+                }
+                catch (Exception ex)
+                {
+                    var context =
+                        $"term_id={term.TermId}, query={term.ContainsText}, werks={term.Werks}, lgort={term.Lgort}, includePlanned={includePlanned}";
+                    if (HasMixedUnitException(ex))
+                    {
+                        var mixedUnitMessage =
+                            $"[StockSnapshotService] Skipping term due to mixed units. {context}. RootError={GetInnermostMessage(ex)}";
+                        Trace.TraceWarning(mixedUnitMessage);
+                        AppendRefreshLog(mixedUnitMessage);
+                        continue;
+                    }
+
+                    var fatalMessage =
+                        $"[StockSnapshotService] Failed to refresh term. {context}. Exception={ex}";
+                    Trace.TraceError(fatalMessage);
+                    AppendRefreshLog(fatalMessage);
+                    throw;
+                }
+            }
 
             using (var conn = new SqlConnection(_connString))
             {
@@ -36,22 +74,16 @@ namespace InformatorSAP.Services
                 {
                     DeleteRowsForUtcRange(conn, tx, dayRange.Item1, dayRange.Item2);
 
-                    foreach (var term in terms)
+                    foreach (var snapshot in preparedSnapshots)
                     {
-                        var summary = sapStockService.GetUnrestrictedStockSummary(
-                            term.Werks,
-                            term.Lgort,
-                            term.ContainsText,
-                            includePlanned);
-
-                        InsertSnapshot(conn, tx, term, summary, nowUtc);
+                        InsertSnapshot(conn, tx, snapshot.Item1, snapshot.Item2, nowUtc);
                     }
 
                     tx.Commit();
                 }
             }
 
-            return terms.Count;
+            return preparedSnapshots.Count;
         }
 
         public List<StockSnapshotRowDto> GetLatestSnapshots(string werks = null, string lgort = null, int? unitId = null)
@@ -105,6 +137,96 @@ WHERE rn = 1
   AND (@unit_id IS NULL OR unit_id = @unit_id)
 ORDER BY unit_id, [query];";
 
+                cmd.Parameters.Add("@werks", SqlDbType.NVarChar, 4).Value = (object)NormalizeNullable(werks) ?? DBNull.Value;
+                cmd.Parameters.Add("@lgort", SqlDbType.NVarChar, 4).Value = (object)NormalizeNullable(lgort) ?? DBNull.Value;
+                cmd.Parameters.Add("@unit_id", SqlDbType.Int).Value = (object)unitId ?? DBNull.Value;
+
+                conn.Open();
+                using (var rdr = cmd.ExecuteReader())
+                {
+                    while (rdr.Read())
+                    {
+                        result.Add(new StockSnapshotRowDto
+                        {
+                            SnapshotId = rdr.GetInt64(0),
+                            TermId = rdr.GetInt32(1),
+                            Werks = rdr.GetString(2),
+                            Lgort = rdr.GetString(3),
+                            Query = rdr.GetString(4),
+                            Total = rdr.GetDecimal(5),
+                            UnitId = rdr.GetInt32(6),
+                            Unit = rdr.IsDBNull(7) ? null : rdr.GetString(7),
+                            PlannedTotal = rdr.GetDecimal(8),
+                            PlannedUnit = rdr.IsDBNull(9) ? null : rdr.GetString(9),
+                            DeliveredTotal = rdr.GetDecimal(10),
+                            DeliveredUnit = rdr.IsDBNull(11) ? null : rdr.GetString(11),
+                            PlannedMinusDeliveredTotal = rdr.GetDecimal(12),
+                            PlannedMinusDeliveredUnit = rdr.IsDBNull(13) ? null : rdr.GetString(13),
+                            RetrievedAtUtc = rdr.GetDateTime(14)
+                        });
+                    }
+                }
+            }
+
+            return result;
+        }
+
+        public List<StockSnapshotRowDto> GetSnapshotsForDate(DateTime localDate, int? unitId = null, string werks = null, string lgort = null)
+        {
+            var result = new List<StockSnapshotRowDto>();
+            var dayRange = GetLjubljanaUtcRangeForLocalDate(localDate);
+
+            using (var conn = new SqlConnection(_connString))
+            using (var cmd = conn.CreateCommand())
+            {
+                cmd.CommandText = @"
+;WITH day_rows AS (
+    SELECT
+        snapshot_id,
+        term_id,
+        werks,
+        lgort,
+        [query],
+        total,
+        unit_id,
+        unit,
+        planned_total,
+        planned_unit,
+        delivered_total,
+        delivered_unit,
+        planned_minus_delivered_total,
+        planned_minus_delivered_unit,
+        retrieved_at_utc,
+        ROW_NUMBER() OVER (PARTITION BY term_id ORDER BY retrieved_at_utc DESC, snapshot_id DESC) AS rn
+    FROM informator.dbo.stock_summary_snapshot
+    WHERE retrieved_at_utc >= @from_utc
+      AND retrieved_at_utc < @to_utc
+)
+SELECT
+    snapshot_id,
+    term_id,
+    werks,
+    lgort,
+    [query],
+    total,
+    unit_id,
+    unit,
+    planned_total,
+    planned_unit,
+    delivered_total,
+    delivered_unit,
+    planned_minus_delivered_total,
+    planned_minus_delivered_unit,
+    retrieved_at_utc
+FROM day_rows
+WHERE rn = 1
+  AND (@werks IS NULL OR werks = @werks)
+  AND (@lgort IS NULL OR lgort = @lgort)
+  AND (@unit_id IS NULL OR unit_id = @unit_id)
+ORDER BY unit_id, [query];";
+
+                cmd.Parameters.Add("@from_utc", SqlDbType.DateTime2).Value = dayRange.Item1;
+                cmd.Parameters.Add("@to_utc", SqlDbType.DateTime2).Value = dayRange.Item2;
                 cmd.Parameters.Add("@werks", SqlDbType.NVarChar, 4).Value = (object)NormalizeNullable(werks) ?? DBNull.Value;
                 cmd.Parameters.Add("@lgort", SqlDbType.NVarChar, 4).Value = (object)NormalizeNullable(lgort) ?? DBNull.Value;
                 cmd.Parameters.Add("@unit_id", SqlDbType.Int).Value = (object)unitId ?? DBNull.Value;
@@ -274,6 +396,16 @@ VALUES
             return Tuple.Create(utcStart, utcEnd);
         }
 
+        private static Tuple<DateTime, DateTime> GetLjubljanaUtcRangeForLocalDate(DateTime localDate)
+        {
+            var tz = TimeZoneInfo.FindSystemTimeZoneById("Central Europe Standard Time");
+            var localDayStart = DateTime.SpecifyKind(localDate.Date, DateTimeKind.Unspecified);
+            var localDayEnd = localDayStart.AddDays(1);
+            var utcStart = TimeZoneInfo.ConvertTimeToUtc(localDayStart, tz);
+            var utcEnd = TimeZoneInfo.ConvertTimeToUtc(localDayEnd, tz);
+            return Tuple.Create(utcStart, utcEnd);
+        }
+
         private static string NormalizeNullable(string value)
         {
             if (string.IsNullOrWhiteSpace(value))
@@ -282,6 +414,70 @@ VALUES
             }
 
             return value.Trim();
+        }
+
+        private static bool HasMixedUnitException(Exception ex)
+        {
+            if (ex == null)
+            {
+                return false;
+            }
+
+            if (ex is InvalidOperationException &&
+                ex.Message != null &&
+                ex.Message.IndexOf("mixed unit", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return true;
+            }
+
+            var aggregate = ex as AggregateException;
+            if (aggregate != null)
+            {
+                return aggregate.Flatten().InnerExceptions.Any(HasMixedUnitException);
+            }
+
+            return HasMixedUnitException(ex.InnerException);
+        }
+
+        private static string GetInnermostMessage(Exception ex)
+        {
+            var cursor = ex;
+            while (cursor != null && cursor.InnerException != null)
+            {
+                cursor = cursor.InnerException;
+            }
+
+            return cursor != null ? cursor.Message : string.Empty;
+        }
+
+        private static void AppendRefreshLog(string line)
+        {
+            try
+            {
+                var path = ResolveRefreshLogPath();
+                var directory = Path.GetDirectoryName(path);
+                if (!string.IsNullOrWhiteSpace(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                }
+
+                File.AppendAllText(path, $"[{DateTime.UtcNow:O}] {line}{Environment.NewLine}");
+            }
+            catch
+            {
+                // logging must never break refresh flow
+            }
+        }
+
+        private static string ResolveRefreshLogPath()
+        {
+            var hostedPath = HostingEnvironment.MapPath("~/App_Data/stock-snapshot-refresh.log");
+            if (!string.IsNullOrWhiteSpace(hostedPath))
+            {
+                return hostedPath;
+            }
+
+            return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Logs", "stock-snapshot-refresh.log");
         }
     }
 }
