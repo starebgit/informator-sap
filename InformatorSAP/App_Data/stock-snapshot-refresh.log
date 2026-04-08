@@ -1,0 +1,1 @@
+[2026-04-07T10:58:55.3900549Z] [StockSnapshotService] Skipping term due to mixed units. term_id=6, query=Obroč, werks=1061, lgort=0013, includePlanned=True. RootError=Delivered quantity has mixed units for selected materials; cannot return a single DeliveredUnit.
