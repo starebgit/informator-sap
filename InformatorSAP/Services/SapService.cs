@@ -1316,7 +1316,10 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
                         foreach (var kv in linesByOrder)
                         {
                             if (longTextByAufnr.ContainsKey(kv.Key)) continue;
-                            var joined = string.Join(Environment.NewLine, kv.Value).Trim('\r', '\n');
+                            var joined = string.Join(" ",
+                                kv.Value
+                                  .Select(x => (x ?? "").Trim())
+                                  .Where(x => !string.IsNullOrWhiteSpace(x)));
                             if (!string.IsNullOrWhiteSpace(joined))
                                 longTextByAufnr[kv.Key] = joined;
                         }
