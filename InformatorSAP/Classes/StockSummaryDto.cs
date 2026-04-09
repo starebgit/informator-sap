@@ -5,6 +5,8 @@ namespace InformatorSAP.Classes
         public string WERKS { get; set; }
         public string LGORT { get; set; }
         public string Query { get; set; }
+        public string ExactText { get; set; }
+        public string SearchMode { get; set; }
         public decimal Total { get; set; }
         public string Unit { get; set; }
         public decimal PlannedTotal { get; set; }

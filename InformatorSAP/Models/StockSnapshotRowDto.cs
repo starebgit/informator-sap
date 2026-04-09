@@ -9,6 +9,8 @@ namespace InformatorSAP.Models
         public string Werks { get; set; }
         public string Lgort { get; set; }
         public string Query { get; set; }
+        public string ExactText { get; set; }
+        public string SearchMode { get; set; }
         public decimal Total { get; set; }
         public int UnitId { get; set; }
         public string Unit { get; set; }

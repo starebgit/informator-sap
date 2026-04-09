@@ -57,17 +57,19 @@ namespace InformatorSAP.Services
             public bool IsReleased { get; set; }
         }
 
-        public StockSummaryDto GetUnrestrictedStockSummary(string werks, string lgort, string query, bool includePlanned = true)
+        public StockSummaryDto GetUnrestrictedStockSummary(string werks, string lgort, string query, string exactText = null, bool includePlanned = true)
         {
             var sw = Stopwatch.StartNew();
-            Trace.WriteLine($"[SapStockService] START werks={werks}, lgort={lgort}, query={query}, includePlanned={includePlanned}");
+            Trace.WriteLine($"[SapStockService] START werks={werks}, lgort={lgort}, query={query}, exactText={exactText}, includePlanned={includePlanned}");
 
             var normalizedQuery = (query ?? string.Empty).Trim();
+            var normalizedExactText = (exactText ?? string.Empty).Trim();
             if (string.IsNullOrWhiteSpace(werks)) throw new ArgumentException("WERKS is required.");
             if (string.IsNullOrWhiteSpace(lgort)) throw new ArgumentException("LGORT is required.");
-            if (string.IsNullOrWhiteSpace(normalizedQuery)) throw new ArgumentException("query is required.");
+            if (string.IsNullOrWhiteSpace(normalizedQuery) && string.IsNullOrWhiteSpace(normalizedExactText))
+                throw new ArgumentException("query or exactText is required.");
 
-            var matchingMaterials = GetMatchingMaterialsByShortText(normalizedQuery);
+            var matchingMaterials = GetMatchingMaterialsByShortText(normalizedQuery, normalizedExactText, werks, lgort);
             Trace.WriteLine($"[SapStockService] matchingMaterials={matchingMaterials.Count}");
             if (matchingMaterials.Count == 0)
             {
@@ -79,6 +81,8 @@ namespace InformatorSAP.Services
                     WERKS = werks,
                     LGORT = lgort,
                     Query = query,
+                    ExactText = string.IsNullOrWhiteSpace(normalizedExactText) ? null : normalizedExactText,
+                    SearchMode = string.IsNullOrWhiteSpace(normalizedExactText) ? "contains" : "exact",
                     Total = 0m,
                     Unit = null,
                     PlannedTotal = 0m,
@@ -133,6 +137,8 @@ namespace InformatorSAP.Services
                 WERKS = werks,
                 LGORT = lgort,
                 Query = query,
+                ExactText = string.IsNullOrWhiteSpace(normalizedExactText) ? null : normalizedExactText,
+                SearchMode = string.IsNullOrWhiteSpace(normalizedExactText) ? "contains" : "exact",
                 Total = total,
                 Unit = unit,
                 PlannedTotal = planned.PlannedTotal,
@@ -144,8 +150,63 @@ namespace InformatorSAP.Services
             };
         }
 
-        private HashSet<string> GetMatchingMaterialsByShortText(string query)
+        private HashSet<string> GetMatchingMaterialsByShortText(string query, string exactText, string werks, string lgort)
         {
+            if (!string.IsNullOrWhiteSpace(exactText))
+            {
+                var exactUpper = exactText.ToUpperInvariant();
+                var exactLower = exactText.ToLowerInvariant();
+                var exactRows = ReadTable(
+                    "MAKT",
+                    new[] { "MATNR", "MAKTX" },
+                    new[]
+                    {
+                        "MAKTX = '" + EscapeForWhere(exactText) + "'",
+                        "OR MAKTX = '" + EscapeForWhere(exactUpper) + "'",
+                        "OR MAKTX = '" + EscapeForWhere(exactLower) + "'"
+                    },
+                    rowCount: 500);
+
+                var exactMatchMaterials = exactRows
+                    .Select(row => new { Matnr = SafeGet(row, 0), ShortText = SafeGet(row, 1) })
+                    .Where(x => !string.IsNullOrWhiteSpace(x.Matnr) && !string.IsNullOrWhiteSpace(x.ShortText))
+                    .Where(x => string.Equals(x.ShortText, exactText, StringComparison.OrdinalIgnoreCase))
+                    .Select(x => x.Matnr)
+                    .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                var exactSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                if (exactMatchMaterials.Count == 0)
+                {
+                    return exactSet;
+                }
+
+                string preferredMaterial = null;
+                foreach (var matnr in exactMatchMaterials)
+                {
+                    var stockRows = ReadTable(
+                        "MARD",
+                        new[] { "MATNR" },
+                        new[]
+                        {
+                            "WERKS = '" + EscapeForWhere(werks) + "'",
+                            "AND LGORT = '" + EscapeForWhere(lgort) + "'",
+                            "AND MATNR = '" + EscapeForWhere(matnr) + "'"
+                        },
+                        rowCount: 1);
+
+                    if (stockRows.Count > 0)
+                    {
+                        preferredMaterial = matnr;
+                        break;
+                    }
+                }
+
+                exactSet.Add(preferredMaterial ?? exactMatchMaterials[0]);
+                return exactSet;
+            }
+
             var up = query.ToUpperInvariant();
             var lo = query.ToLowerInvariant();
 
