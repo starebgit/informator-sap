@@ -59,12 +59,12 @@ namespace InformatorSAP.Controllers
 
         [HttpGet]
         [Route("{werks}/{lgort}/summary")]
-        public IHttpActionResult Summary(string werks, string lgort, [FromUri] string query, [FromUri] bool includePlanned = true)
+        public IHttpActionResult Summary(string werks, string lgort, [FromUri] string query, [FromUri] string exactText = null, [FromUri] bool includePlanned = true)
         {
             try
             {
                 var service = new SapStockService();
-                var result = service.GetUnrestrictedStockSummary(werks, lgort, query, includePlanned);
+                var result = service.GetUnrestrictedStockSummary(werks, lgort, query, exactText, includePlanned);
                 return Ok(result);
             }
             catch (ArgumentException ex)
