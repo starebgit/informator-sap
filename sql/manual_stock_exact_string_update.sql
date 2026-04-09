@@ -25,12 +25,18 @@ BEGIN
 END;
 
 -- Backfill mode for existing rows (if exact_text was ever populated manually).
-UPDATE informator.dbo.stock_summary_snapshot
-SET search_mode = CASE
-    WHEN exact_text IS NOT NULL AND LTRIM(RTRIM(exact_text)) <> '' THEN 'exact'
-    ELSE 'contains'
-END
-WHERE search_mode IS NULL
-   OR search_mode NOT IN ('contains', 'exact');
+-- NOTE: execute as dynamic SQL so SQL Server does not fail compile-time name resolution
+-- when the column is created in the same batch.
+IF COL_LENGTH('informator.dbo.stock_summary_snapshot', 'search_mode') IS NOT NULL
+BEGIN
+    EXEC sp_executesql N'
+    UPDATE informator.dbo.stock_summary_snapshot
+    SET search_mode = CASE
+        WHEN exact_text IS NOT NULL AND LTRIM(RTRIM(exact_text)) <> '''' THEN ''exact''
+        ELSE ''contains''
+    END
+    WHERE search_mode IS NULL
+       OR search_mode NOT IN (''contains'', ''exact'');';
+END;
 
 COMMIT TRANSACTION;
