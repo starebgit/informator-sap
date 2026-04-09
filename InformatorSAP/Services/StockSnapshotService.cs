@@ -42,6 +42,7 @@ namespace InformatorSAP.Services
                         term.Werks,
                         term.Lgort,
                         term.ContainsText,
+                        term.ExactText,
                         includePlanned);
 
                     preparedSnapshots.Add(Tuple.Create(term, summary));
@@ -49,7 +50,7 @@ namespace InformatorSAP.Services
                 catch (Exception ex)
                 {
                     var context =
-                        $"term_id={term.TermId}, query={term.ContainsText}, werks={term.Werks}, lgort={term.Lgort}, includePlanned={includePlanned}";
+                        $"term_id={term.TermId}, query={term.ContainsText}, exactText={term.ExactText}, werks={term.Werks}, lgort={term.Lgort}, includePlanned={includePlanned}";
                     if (HasMixedUnitException(ex))
                     {
                         var mixedUnitMessage =
@@ -101,6 +102,8 @@ namespace InformatorSAP.Services
         werks,
         lgort,
         [query],
+        exact_text,
+        search_mode,
         total,
         unit_id,
         unit,
@@ -120,6 +123,8 @@ SELECT
     werks,
     lgort,
     [query],
+    exact_text,
+    search_mode,
     total,
     unit_id,
     unit,
@@ -153,16 +158,18 @@ ORDER BY unit_id, [query];";
                             Werks = rdr.GetString(2),
                             Lgort = rdr.GetString(3),
                             Query = rdr.GetString(4),
-                            Total = rdr.GetDecimal(5),
-                            UnitId = rdr.GetInt32(6),
-                            Unit = rdr.IsDBNull(7) ? null : rdr.GetString(7),
-                            PlannedTotal = rdr.GetDecimal(8),
-                            PlannedUnit = rdr.IsDBNull(9) ? null : rdr.GetString(9),
-                            DeliveredTotal = rdr.GetDecimal(10),
-                            DeliveredUnit = rdr.IsDBNull(11) ? null : rdr.GetString(11),
-                            PlannedMinusDeliveredTotal = rdr.GetDecimal(12),
-                            PlannedMinusDeliveredUnit = rdr.IsDBNull(13) ? null : rdr.GetString(13),
-                            RetrievedAtUtc = rdr.GetDateTime(14)
+                            ExactText = rdr.IsDBNull(5) ? null : rdr.GetString(5),
+                            SearchMode = rdr.IsDBNull(6) ? null : rdr.GetString(6),
+                            Total = rdr.GetDecimal(7),
+                            UnitId = rdr.GetInt32(8),
+                            Unit = rdr.IsDBNull(9) ? null : rdr.GetString(9),
+                            PlannedTotal = rdr.GetDecimal(10),
+                            PlannedUnit = rdr.IsDBNull(11) ? null : rdr.GetString(11),
+                            DeliveredTotal = rdr.GetDecimal(12),
+                            DeliveredUnit = rdr.IsDBNull(13) ? null : rdr.GetString(13),
+                            PlannedMinusDeliveredTotal = rdr.GetDecimal(14),
+                            PlannedMinusDeliveredUnit = rdr.IsDBNull(15) ? null : rdr.GetString(15),
+                            RetrievedAtUtc = rdr.GetDateTime(16)
                         });
                     }
                 }
@@ -187,6 +194,8 @@ ORDER BY unit_id, [query];";
         werks,
         lgort,
         [query],
+        exact_text,
+        search_mode,
         total,
         unit_id,
         unit,
@@ -208,6 +217,8 @@ SELECT
     werks,
     lgort,
     [query],
+    exact_text,
+    search_mode,
     total,
     unit_id,
     unit,
@@ -243,16 +254,18 @@ ORDER BY unit_id, [query];";
                             Werks = rdr.GetString(2),
                             Lgort = rdr.GetString(3),
                             Query = rdr.GetString(4),
-                            Total = rdr.GetDecimal(5),
-                            UnitId = rdr.GetInt32(6),
-                            Unit = rdr.IsDBNull(7) ? null : rdr.GetString(7),
-                            PlannedTotal = rdr.GetDecimal(8),
-                            PlannedUnit = rdr.IsDBNull(9) ? null : rdr.GetString(9),
-                            DeliveredTotal = rdr.GetDecimal(10),
-                            DeliveredUnit = rdr.IsDBNull(11) ? null : rdr.GetString(11),
-                            PlannedMinusDeliveredTotal = rdr.GetDecimal(12),
-                            PlannedMinusDeliveredUnit = rdr.IsDBNull(13) ? null : rdr.GetString(13),
-                            RetrievedAtUtc = rdr.GetDateTime(14)
+                            ExactText = rdr.IsDBNull(5) ? null : rdr.GetString(5),
+                            SearchMode = rdr.IsDBNull(6) ? null : rdr.GetString(6),
+                            Total = rdr.GetDecimal(7),
+                            UnitId = rdr.GetInt32(8),
+                            Unit = rdr.IsDBNull(9) ? null : rdr.GetString(9),
+                            PlannedTotal = rdr.GetDecimal(10),
+                            PlannedUnit = rdr.IsDBNull(11) ? null : rdr.GetString(11),
+                            DeliveredTotal = rdr.GetDecimal(12),
+                            DeliveredUnit = rdr.IsDBNull(13) ? null : rdr.GetString(13),
+                            PlannedMinusDeliveredTotal = rdr.GetDecimal(14),
+                            PlannedMinusDeliveredUnit = rdr.IsDBNull(15) ? null : rdr.GetString(15),
+                            RetrievedAtUtc = rdr.GetDateTime(16)
                         });
                     }
                 }
@@ -269,7 +282,7 @@ ORDER BY unit_id, [query];";
             using (var cmd = conn.CreateCommand())
             {
                 cmd.CommandText = @"
-SELECT term_id, contains_text, werks, lgort, unit_id, is_active
+SELECT term_id, contains_text, exact_text, werks, lgort, unit_id, is_active
 FROM informator.dbo.stock_term
 WHERE is_active = 1
 ORDER BY term_id;";
@@ -283,10 +296,11 @@ ORDER BY term_id;";
                         {
                             TermId = rdr.GetInt32(0),
                             ContainsText = rdr.GetString(1).Trim(),
-                            Werks = rdr.IsDBNull(2) ? null : rdr.GetString(2).Trim(),
-                            Lgort = rdr.IsDBNull(3) ? null : rdr.GetString(3).Trim(),
-                            UnitId = rdr.GetInt32(4),
-                            IsActive = rdr.GetBoolean(5)
+                            ExactText = rdr.IsDBNull(2) ? null : rdr.GetString(2).Trim(),
+                            Werks = rdr.IsDBNull(3) ? null : rdr.GetString(3).Trim(),
+                            Lgort = rdr.IsDBNull(4) ? null : rdr.GetString(4).Trim(),
+                            UnitId = rdr.GetInt32(5),
+                            IsActive = rdr.GetBoolean(6)
                         });
                     }
                 }
@@ -323,6 +337,8 @@ INSERT INTO informator.dbo.stock_summary_snapshot
     werks,
     lgort,
     [query],
+    exact_text,
+    search_mode,
     total,
     unit_id,
     unit,
@@ -340,6 +356,8 @@ VALUES
     @werks,
     @lgort,
     @query,
+    @exact_text,
+    @search_mode,
     @total,
     @unit_id,
     @unit,
@@ -356,6 +374,9 @@ VALUES
                 cmd.Parameters.Add("@werks", SqlDbType.NVarChar, 4).Value = term.Werks;
                 cmd.Parameters.Add("@lgort", SqlDbType.NVarChar, 4).Value = term.Lgort;
                 cmd.Parameters.Add("@query", SqlDbType.NVarChar, 200).Value = term.ContainsText;
+                cmd.Parameters.Add("@exact_text", SqlDbType.NVarChar, 200).Value = (object)term.ExactText ?? DBNull.Value;
+                cmd.Parameters.Add("@search_mode", SqlDbType.NVarChar, 20).Value =
+                    string.IsNullOrWhiteSpace(term.ExactText) ? "contains" : "exact";
                 cmd.Parameters.Add("@total", SqlDbType.Decimal).Value = summary.Total;
                 cmd.Parameters["@total"].Precision = 18;
                 cmd.Parameters["@total"].Scale = 3;
