@@ -42,6 +42,68 @@ namespace InformatorSAP.Controllers
         }
 
         [HttpGet]
+        [Route("snapshots")]
+        public IHttpActionResult Snapshots(
+            [FromUri] string werks = null,
+            [FromUri] string unitId = null,
+            [FromUri] string latestPerTerm = null,
+            [FromUri] DateTime? from = null,
+            [FromUri] DateTime? to = null,
+            [FromUri] string lgort = null)
+        {
+            if (string.IsNullOrWhiteSpace(werks))
+            {
+                return BadRequest("Query parameter 'werks' is required.");
+            }
+
+            if (string.IsNullOrWhiteSpace(unitId))
+            {
+                return BadRequest("Query parameter 'unitId' is required.");
+            }
+
+            int parsedUnitId;
+            if (!int.TryParse(unitId, out parsedUnitId))
+            {
+                return BadRequest("Query parameter 'unitId' must be a valid integer.");
+            }
+
+            bool parsedLatestPerTerm;
+            if (string.IsNullOrWhiteSpace(latestPerTerm) || !bool.TryParse(latestPerTerm, out parsedLatestPerTerm))
+            {
+                return BadRequest("Query parameter 'latestPerTerm' is required and must be 'true' or 'false'.");
+            }
+
+            if (from.HasValue && to.HasValue && from.Value > to.Value)
+            {
+                return BadRequest("Query parameter 'from' must be less than or equal to 'to'.");
+            }
+
+            if (!parsedLatestPerTerm && (!from.HasValue || !to.HasValue))
+            {
+                return BadRequest("Query parameters 'from' and 'to' are required when latestPerTerm=false.");
+            }
+
+            try
+            {
+                var service = new StockSnapshotService();
+                var rows = service.GetSnapshots(
+                    werks,
+                    parsedUnitId,
+                    parsedLatestPerTerm,
+                    from,
+                    to,
+                    lgort);
+
+                return Ok(rows);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(ex.Message);
+            }
+        }
+
+
+        [HttpGet]
         [Route("snapshots/by-date")]
         public IHttpActionResult SnapshotsByDate([FromUri] DateTime date, [FromUri] int? unitId = null, [FromUri] string werks = null, [FromUri] string lgort = null)
         {

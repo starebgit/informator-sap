@@ -178,6 +178,145 @@ ORDER BY unit_id, [query];";
             return result;
         }
 
+
+        public List<StockSnapshotRowDto> GetSnapshots(
+            string werks,
+            int unitId,
+            bool latestPerTerm,
+            DateTime? fromUtc = null,
+            DateTime? toUtc = null,
+            string lgort = null)
+        {
+            var result = new List<StockSnapshotRowDto>();
+
+            using (var conn = new SqlConnection(_connString))
+            using (var cmd = conn.CreateCommand())
+            {
+                if (latestPerTerm)
+                {
+                    cmd.CommandText = @"
+;WITH latest AS (
+    SELECT
+        snapshot_id,
+        term_id,
+        werks,
+        lgort,
+        [query],
+        exact_text,
+        search_mode,
+        total,
+        unit_id,
+        unit,
+        planned_total,
+        planned_unit,
+        delivered_total,
+        delivered_unit,
+        planned_minus_delivered_total,
+        planned_minus_delivered_unit,
+        retrieved_at_utc,
+        ROW_NUMBER() OVER (PARTITION BY term_id ORDER BY retrieved_at_utc DESC, snapshot_id DESC) AS rn
+    FROM informator.dbo.stock_summary_snapshot
+)
+SELECT
+    snapshot_id,
+    term_id,
+    werks,
+    lgort,
+    [query],
+    exact_text,
+    search_mode,
+    total,
+    unit_id,
+    unit,
+    planned_total,
+    planned_unit,
+    delivered_total,
+    delivered_unit,
+    planned_minus_delivered_total,
+    planned_minus_delivered_unit,
+    retrieved_at_utc
+FROM latest
+WHERE rn = 1
+  AND werks = @werks
+  AND unit_id = @unit_id
+  AND (@lgort IS NULL OR lgort = @lgort)
+ORDER BY term_id;";
+                }
+                else
+                {
+                    cmd.CommandText = @"
+;WITH day_latest AS (
+    SELECT
+        snapshot_id,
+        term_id,
+        werks,
+        lgort,
+        [query],
+        exact_text,
+        search_mode,
+        total,
+        unit_id,
+        unit,
+        planned_total,
+        planned_unit,
+        delivered_total,
+        delivered_unit,
+        planned_minus_delivered_total,
+        planned_minus_delivered_unit,
+        retrieved_at_utc,
+        ROW_NUMBER() OVER (
+            PARTITION BY term_id, CAST(retrieved_at_utc AS date)
+            ORDER BY retrieved_at_utc DESC, snapshot_id DESC
+        ) AS rn
+    FROM informator.dbo.stock_summary_snapshot
+    WHERE werks = @werks
+      AND unit_id = @unit_id
+      AND (@lgort IS NULL OR lgort = @lgort)
+      AND (@from_utc IS NULL OR retrieved_at_utc >= @from_utc)
+      AND (@to_utc IS NULL OR retrieved_at_utc <= @to_utc)
+)
+SELECT
+    snapshot_id,
+    term_id,
+    werks,
+    lgort,
+    [query],
+    exact_text,
+    search_mode,
+    total,
+    unit_id,
+    unit,
+    planned_total,
+    planned_unit,
+    delivered_total,
+    delivered_unit,
+    planned_minus_delivered_total,
+    planned_minus_delivered_unit,
+    retrieved_at_utc
+FROM day_latest
+WHERE rn = 1
+ORDER BY retrieved_at_utc DESC, snapshot_id DESC;";
+                }
+
+                cmd.Parameters.Add("@werks", SqlDbType.NVarChar, 4).Value = NormalizeNullable(werks);
+                cmd.Parameters.Add("@unit_id", SqlDbType.Int).Value = unitId;
+                cmd.Parameters.Add("@lgort", SqlDbType.NVarChar, 4).Value = (object)NormalizeNullable(lgort) ?? DBNull.Value;
+                cmd.Parameters.Add("@from_utc", SqlDbType.DateTime2).Value = (object)fromUtc ?? DBNull.Value;
+                cmd.Parameters.Add("@to_utc", SqlDbType.DateTime2).Value = (object)toUtc ?? DBNull.Value;
+
+                conn.Open();
+                using (var rdr = cmd.ExecuteReader())
+                {
+                    while (rdr.Read())
+                    {
+                        result.Add(MapSnapshotRow(rdr));
+                    }
+                }
+            }
+
+            return result;
+        }
+
         public List<StockSnapshotRowDto> GetSnapshotsForDate(DateTime localDate, int? unitId = null, string werks = null, string lgort = null)
         {
             var result = new List<StockSnapshotRowDto>();
@@ -435,6 +574,30 @@ VALUES
             }
 
             return value.Trim();
+        }
+
+        private static StockSnapshotRowDto MapSnapshotRow(SqlDataReader rdr)
+        {
+            return new StockSnapshotRowDto
+            {
+                SnapshotId = rdr.GetInt64(0),
+                TermId = rdr.GetInt32(1),
+                Werks = rdr.GetString(2),
+                Lgort = rdr.GetString(3),
+                Query = rdr.GetString(4),
+                ExactText = rdr.IsDBNull(5) ? null : rdr.GetString(5),
+                SearchMode = rdr.IsDBNull(6) ? null : rdr.GetString(6),
+                Total = rdr.GetDecimal(7),
+                UnitId = rdr.GetInt32(8),
+                Unit = rdr.IsDBNull(9) ? null : rdr.GetString(9),
+                PlannedTotal = rdr.GetDecimal(10),
+                PlannedUnit = rdr.IsDBNull(11) ? null : rdr.GetString(11),
+                DeliveredTotal = rdr.GetDecimal(12),
+                DeliveredUnit = rdr.IsDBNull(13) ? null : rdr.GetString(13),
+                PlannedMinusDeliveredTotal = rdr.GetDecimal(14),
+                PlannedMinusDeliveredUnit = rdr.IsDBNull(15) ? null : rdr.GetString(15),
+                RetrievedAtUtc = rdr.GetDateTime(16)
+            };
         }
 
         private static bool HasMixedUnitException(Exception ex)
