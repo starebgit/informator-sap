@@ -21,5 +21,11 @@ namespace InformatorSAP.Models
         public decimal PlannedMinusDeliveredTotal { get; set; }
         public string PlannedMinusDeliveredUnit { get; set; }
         public DateTime RetrievedAtUtc { get; set; }
+        public long? GoalId { get; set; }
+        public decimal? GoalValue { get; set; }
+        public DateTime? GoalValidFrom { get; set; }
+        public DateTime? GoalValidTo { get; set; }
+        public DateTime? GoalCreatedAt { get; set; }
+        public DateTime? GoalUpdatedAt { get; set; }
     }
 }

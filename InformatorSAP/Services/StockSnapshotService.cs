@@ -118,24 +118,44 @@ namespace InformatorSAP.Services
     FROM informator.dbo.stock_summary_snapshot
 )
 SELECT
-    snapshot_id,
-    term_id,
-    werks,
-    lgort,
-    [query],
-    exact_text,
-    search_mode,
-    total,
-    unit_id,
-    unit,
-    planned_total,
-    planned_unit,
-    delivered_total,
-    delivered_unit,
-    planned_minus_delivered_total,
-    planned_minus_delivered_unit,
-    retrieved_at_utc
+    latest.snapshot_id,
+    latest.term_id,
+    latest.werks,
+    latest.lgort,
+    latest.[query],
+    latest.exact_text,
+    latest.search_mode,
+    latest.total,
+    latest.unit_id,
+    latest.unit,
+    latest.planned_total,
+    latest.planned_unit,
+    latest.delivered_total,
+    latest.delivered_unit,
+    latest.planned_minus_delivered_total,
+    latest.planned_minus_delivered_unit,
+    latest.retrieved_at_utc,
+    goal.id AS goal_id,
+    goal.goal_value,
+    goal.valid_from,
+    goal.valid_to,
+    goal.created_at,
+    goal.updated_at
 FROM latest
+OUTER APPLY (
+    SELECT TOP 1
+        g.id,
+        g.goal_value,
+        g.valid_from,
+        g.valid_to,
+        g.created_at,
+        g.updated_at
+    FROM informator.dbo.stock_goal g
+    WHERE g.term_id = latest.term_id
+      AND CAST(latest.retrieved_at_utc AS date) >= g.valid_from
+      AND CAST(latest.retrieved_at_utc AS date) <= g.valid_to
+    ORDER BY g.updated_at DESC, g.created_at DESC, g.id DESC
+) goal
 WHERE rn = 1
   AND (@werks IS NULL OR werks = @werks)
   AND (@lgort IS NULL OR lgort = @lgort)
@@ -151,26 +171,7 @@ ORDER BY unit_id, [query];";
                 {
                     while (rdr.Read())
                     {
-                        result.Add(new StockSnapshotRowDto
-                        {
-                            SnapshotId = rdr.GetInt64(0),
-                            TermId = rdr.GetInt32(1),
-                            Werks = rdr.GetString(2),
-                            Lgort = rdr.GetString(3),
-                            Query = rdr.GetString(4),
-                            ExactText = rdr.IsDBNull(5) ? null : rdr.GetString(5),
-                            SearchMode = rdr.IsDBNull(6) ? null : rdr.GetString(6),
-                            Total = rdr.GetDecimal(7),
-                            UnitId = rdr.GetInt32(8),
-                            Unit = rdr.IsDBNull(9) ? null : rdr.GetString(9),
-                            PlannedTotal = rdr.GetDecimal(10),
-                            PlannedUnit = rdr.IsDBNull(11) ? null : rdr.GetString(11),
-                            DeliveredTotal = rdr.GetDecimal(12),
-                            DeliveredUnit = rdr.IsDBNull(13) ? null : rdr.GetString(13),
-                            PlannedMinusDeliveredTotal = rdr.GetDecimal(14),
-                            PlannedMinusDeliveredUnit = rdr.IsDBNull(15) ? null : rdr.GetString(15),
-                            RetrievedAtUtc = rdr.GetDateTime(16)
-                        });
+                        result.Add(MapSnapshotRow(rdr));
                     }
                 }
             }
@@ -218,24 +219,44 @@ ORDER BY unit_id, [query];";
     FROM informator.dbo.stock_summary_snapshot
 )
 SELECT
-    snapshot_id,
-    term_id,
-    werks,
-    lgort,
-    [query],
-    exact_text,
-    search_mode,
-    total,
-    unit_id,
-    unit,
-    planned_total,
-    planned_unit,
-    delivered_total,
-    delivered_unit,
-    planned_minus_delivered_total,
-    planned_minus_delivered_unit,
-    retrieved_at_utc
+    latest.snapshot_id,
+    latest.term_id,
+    latest.werks,
+    latest.lgort,
+    latest.[query],
+    latest.exact_text,
+    latest.search_mode,
+    latest.total,
+    latest.unit_id,
+    latest.unit,
+    latest.planned_total,
+    latest.planned_unit,
+    latest.delivered_total,
+    latest.delivered_unit,
+    latest.planned_minus_delivered_total,
+    latest.planned_minus_delivered_unit,
+    latest.retrieved_at_utc,
+    goal.id AS goal_id,
+    goal.goal_value,
+    goal.valid_from,
+    goal.valid_to,
+    goal.created_at,
+    goal.updated_at
 FROM latest
+OUTER APPLY (
+    SELECT TOP 1
+        g.id,
+        g.goal_value,
+        g.valid_from,
+        g.valid_to,
+        g.created_at,
+        g.updated_at
+    FROM informator.dbo.stock_goal g
+    WHERE g.term_id = latest.term_id
+      AND CAST(latest.retrieved_at_utc AS date) >= g.valid_from
+      AND CAST(latest.retrieved_at_utc AS date) <= g.valid_to
+    ORDER BY g.updated_at DESC, g.created_at DESC, g.id DESC
+) goal
 WHERE rn = 1
   AND werks = @werks
   AND unit_id = @unit_id
@@ -276,24 +297,44 @@ ORDER BY term_id;";
       AND (@to_utc IS NULL OR retrieved_at_utc <= @to_utc)
 )
 SELECT
-    snapshot_id,
-    term_id,
-    werks,
-    lgort,
-    [query],
-    exact_text,
-    search_mode,
-    total,
-    unit_id,
-    unit,
-    planned_total,
-    planned_unit,
-    delivered_total,
-    delivered_unit,
-    planned_minus_delivered_total,
-    planned_minus_delivered_unit,
-    retrieved_at_utc
+    day_latest.snapshot_id,
+    day_latest.term_id,
+    day_latest.werks,
+    day_latest.lgort,
+    day_latest.[query],
+    day_latest.exact_text,
+    day_latest.search_mode,
+    day_latest.total,
+    day_latest.unit_id,
+    day_latest.unit,
+    day_latest.planned_total,
+    day_latest.planned_unit,
+    day_latest.delivered_total,
+    day_latest.delivered_unit,
+    day_latest.planned_minus_delivered_total,
+    day_latest.planned_minus_delivered_unit,
+    day_latest.retrieved_at_utc,
+    goal.id AS goal_id,
+    goal.goal_value,
+    goal.valid_from,
+    goal.valid_to,
+    goal.created_at,
+    goal.updated_at
 FROM day_latest
+OUTER APPLY (
+    SELECT TOP 1
+        g.id,
+        g.goal_value,
+        g.valid_from,
+        g.valid_to,
+        g.created_at,
+        g.updated_at
+    FROM informator.dbo.stock_goal g
+    WHERE g.term_id = day_latest.term_id
+      AND CAST(day_latest.retrieved_at_utc AS date) >= g.valid_from
+      AND CAST(day_latest.retrieved_at_utc AS date) <= g.valid_to
+    ORDER BY g.updated_at DESC, g.created_at DESC, g.id DESC
+) goal
 WHERE rn = 1
 ORDER BY retrieved_at_utc DESC, snapshot_id DESC;";
                 }
@@ -351,24 +392,44 @@ ORDER BY retrieved_at_utc DESC, snapshot_id DESC;";
       AND retrieved_at_utc < @to_utc
 )
 SELECT
-    snapshot_id,
-    term_id,
-    werks,
-    lgort,
-    [query],
-    exact_text,
-    search_mode,
-    total,
-    unit_id,
-    unit,
-    planned_total,
-    planned_unit,
-    delivered_total,
-    delivered_unit,
-    planned_minus_delivered_total,
-    planned_minus_delivered_unit,
-    retrieved_at_utc
+    day_rows.snapshot_id,
+    day_rows.term_id,
+    day_rows.werks,
+    day_rows.lgort,
+    day_rows.[query],
+    day_rows.exact_text,
+    day_rows.search_mode,
+    day_rows.total,
+    day_rows.unit_id,
+    day_rows.unit,
+    day_rows.planned_total,
+    day_rows.planned_unit,
+    day_rows.delivered_total,
+    day_rows.delivered_unit,
+    day_rows.planned_minus_delivered_total,
+    day_rows.planned_minus_delivered_unit,
+    day_rows.retrieved_at_utc,
+    goal.id AS goal_id,
+    goal.goal_value,
+    goal.valid_from,
+    goal.valid_to,
+    goal.created_at,
+    goal.updated_at
 FROM day_rows
+OUTER APPLY (
+    SELECT TOP 1
+        g.id,
+        g.goal_value,
+        g.valid_from,
+        g.valid_to,
+        g.created_at,
+        g.updated_at
+    FROM informator.dbo.stock_goal g
+    WHERE g.term_id = day_rows.term_id
+      AND CAST(day_rows.retrieved_at_utc AS date) >= g.valid_from
+      AND CAST(day_rows.retrieved_at_utc AS date) <= g.valid_to
+    ORDER BY g.updated_at DESC, g.created_at DESC, g.id DESC
+) goal
 WHERE rn = 1
   AND (@werks IS NULL OR werks = @werks)
   AND (@lgort IS NULL OR lgort = @lgort)
@@ -386,26 +447,7 @@ ORDER BY unit_id, [query];";
                 {
                     while (rdr.Read())
                     {
-                        result.Add(new StockSnapshotRowDto
-                        {
-                            SnapshotId = rdr.GetInt64(0),
-                            TermId = rdr.GetInt32(1),
-                            Werks = rdr.GetString(2),
-                            Lgort = rdr.GetString(3),
-                            Query = rdr.GetString(4),
-                            ExactText = rdr.IsDBNull(5) ? null : rdr.GetString(5),
-                            SearchMode = rdr.IsDBNull(6) ? null : rdr.GetString(6),
-                            Total = rdr.GetDecimal(7),
-                            UnitId = rdr.GetInt32(8),
-                            Unit = rdr.IsDBNull(9) ? null : rdr.GetString(9),
-                            PlannedTotal = rdr.GetDecimal(10),
-                            PlannedUnit = rdr.IsDBNull(11) ? null : rdr.GetString(11),
-                            DeliveredTotal = rdr.GetDecimal(12),
-                            DeliveredUnit = rdr.IsDBNull(13) ? null : rdr.GetString(13),
-                            PlannedMinusDeliveredTotal = rdr.GetDecimal(14),
-                            PlannedMinusDeliveredUnit = rdr.IsDBNull(15) ? null : rdr.GetString(15),
-                            RetrievedAtUtc = rdr.GetDateTime(16)
-                        });
+                        result.Add(MapSnapshotRow(rdr));
                     }
                 }
             }
@@ -596,7 +638,13 @@ VALUES
                 DeliveredUnit = rdr.IsDBNull(13) ? null : rdr.GetString(13),
                 PlannedMinusDeliveredTotal = rdr.GetDecimal(14),
                 PlannedMinusDeliveredUnit = rdr.IsDBNull(15) ? null : rdr.GetString(15),
-                RetrievedAtUtc = rdr.GetDateTime(16)
+                RetrievedAtUtc = rdr.GetDateTime(16),
+                GoalId = rdr.IsDBNull(17) ? (long?)null : rdr.GetInt64(17),
+                GoalValue = rdr.IsDBNull(18) ? (decimal?)null : rdr.GetDecimal(18),
+                GoalValidFrom = rdr.IsDBNull(19) ? (DateTime?)null : rdr.GetDateTime(19),
+                GoalValidTo = rdr.IsDBNull(20) ? (DateTime?)null : rdr.GetDateTime(20),
+                GoalCreatedAt = rdr.IsDBNull(21) ? (DateTime?)null : rdr.GetDateTime(21),
+                GoalUpdatedAt = rdr.IsDBNull(22) ? (DateTime?)null : rdr.GetDateTime(22)
             };
         }
 
