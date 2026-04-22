@@ -1,5 +1,6 @@
 using System;
 using System.Web.Http;
+using InformatorSAP.Models;
 using InformatorSAP.Services;
 
 namespace InformatorSAP.Controllers
@@ -7,7 +8,83 @@ namespace InformatorSAP.Controllers
     [RoutePrefix("api/stock")]
     public class StockController : ApiController
     {
+        [HttpPost]
+        [Route("goals")]
+        public IHttpActionResult CreateGoal([FromBody] CreateStockGoalRequest request)
+        {
+            if (request == null)
+            {
+                return BadRequest("Request body is required.");
+            }
 
+            if (!request.TermId.HasValue)
+            {
+                return BadRequest("Field 'termId' is required.");
+            }
+
+            if (!request.GoalValue.HasValue)
+            {
+                return BadRequest("Field 'goalValue' is required.");
+            }
+
+            if (!request.ValidFrom.HasValue)
+            {
+                return BadRequest("Field 'validFrom' is required.");
+            }
+
+            if (!request.ValidTo.HasValue)
+            {
+                return BadRequest("Field 'validTo' is required.");
+            }
+
+            if (request.ValidFrom.Value.Date > request.ValidTo.Value.Date)
+            {
+                return BadRequest("Field 'validFrom' must be less than or equal to 'validTo'.");
+            }
+
+            try
+            {
+                var service = new StockGoalService();
+                var created = service.CreateGoal(
+                    request.TermId.Value,
+                    request.GoalValue.Value,
+                    request.ValidFrom.Value,
+                    request.ValidTo.Value);
+
+                return Ok(created);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(ex.Message);
+            }
+        }
+
+        [HttpGet]
+        [Route("goals")]
+        public IHttpActionResult GetGoals([FromUri] string termId = null)
+        {
+            if (string.IsNullOrWhiteSpace(termId))
+            {
+                return BadRequest("Query parameter 'termId' is required.");
+            }
+
+            int parsedTermId;
+            if (!int.TryParse(termId, out parsedTermId))
+            {
+                return BadRequest("Query parameter 'termId' must be a valid integer.");
+            }
+
+            try
+            {
+                var service = new StockGoalService();
+                var goals = service.GetGoals(parsedTermId);
+                return Ok(goals);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(ex.Message);
+            }
+        }
 
         [HttpPost]
         [Route("snapshots/refresh")]
