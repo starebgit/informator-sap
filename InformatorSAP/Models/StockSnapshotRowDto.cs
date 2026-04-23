@@ -13,6 +13,8 @@ namespace InformatorSAP.Models
         public string SearchMode { get; set; }
         public decimal Total { get; set; }
         public int UnitId { get; set; }
+        public int? SubunitId { get; set; }
+        public string Title { get; set; }
         public string Unit { get; set; }
         public decimal PlannedTotal { get; set; }
         public string PlannedUnit { get; set; }

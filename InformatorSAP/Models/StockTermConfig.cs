@@ -8,6 +8,8 @@ namespace InformatorSAP.Models
         public string Werks { get; set; }
         public string Lgort { get; set; }
         public int UnitId { get; set; }
+        public int? SubunitId { get; set; }
+        public string Title { get; set; }
         public bool IsActive { get; set; }
     }
 }
