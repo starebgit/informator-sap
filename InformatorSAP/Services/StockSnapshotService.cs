@@ -106,6 +106,8 @@ namespace InformatorSAP.Services
         search_mode,
         total,
         unit_id,
+        subunit_id,
+        title,
         unit,
         planned_total,
         planned_unit,
@@ -127,6 +129,8 @@ SELECT
     latest.search_mode,
     latest.total,
     latest.unit_id,
+    latest.subunit_id,
+    latest.title,
     latest.unit,
     latest.planned_total,
     latest.planned_unit,
@@ -207,6 +211,8 @@ ORDER BY unit_id, [query];";
         search_mode,
         total,
         unit_id,
+        subunit_id,
+        title,
         unit,
         planned_total,
         planned_unit,
@@ -228,6 +234,8 @@ SELECT
     latest.search_mode,
     latest.total,
     latest.unit_id,
+    latest.subunit_id,
+    latest.title,
     latest.unit,
     latest.planned_total,
     latest.planned_unit,
@@ -277,6 +285,8 @@ ORDER BY term_id;";
         search_mode,
         total,
         unit_id,
+        subunit_id,
+        title,
         unit,
         planned_total,
         planned_unit,
@@ -306,6 +316,8 @@ SELECT
     day_latest.search_mode,
     day_latest.total,
     day_latest.unit_id,
+    day_latest.subunit_id,
+    day_latest.title,
     day_latest.unit,
     day_latest.planned_total,
     day_latest.planned_unit,
@@ -378,6 +390,8 @@ ORDER BY retrieved_at_utc DESC, snapshot_id DESC;";
         search_mode,
         total,
         unit_id,
+        subunit_id,
+        title,
         unit,
         planned_total,
         planned_unit,
@@ -401,6 +415,8 @@ SELECT
     day_rows.search_mode,
     day_rows.total,
     day_rows.unit_id,
+    day_rows.subunit_id,
+    day_rows.title,
     day_rows.unit,
     day_rows.planned_total,
     day_rows.planned_unit,
@@ -463,7 +479,7 @@ ORDER BY unit_id, [query];";
             using (var cmd = conn.CreateCommand())
             {
                 cmd.CommandText = @"
-SELECT term_id, contains_text, exact_text, werks, lgort, unit_id, is_active
+SELECT term_id, contains_text, exact_text, werks, lgort, unit_id, subunit_id, title, is_active
 FROM informator.dbo.stock_term
 WHERE is_active = 1
 ORDER BY term_id;";
@@ -481,7 +497,9 @@ ORDER BY term_id;";
                             Werks = rdr.IsDBNull(3) ? null : rdr.GetString(3).Trim(),
                             Lgort = rdr.IsDBNull(4) ? null : rdr.GetString(4).Trim(),
                             UnitId = rdr.GetInt32(5),
-                            IsActive = rdr.GetBoolean(6)
+                            SubunitId = rdr.IsDBNull(6) ? (int?)null : rdr.GetInt32(6),
+                            Title = rdr.IsDBNull(7) ? null : rdr.GetString(7).Trim(),
+                            IsActive = rdr.GetBoolean(8)
                         });
                     }
                 }
@@ -522,6 +540,8 @@ INSERT INTO informator.dbo.stock_summary_snapshot
     search_mode,
     total,
     unit_id,
+    subunit_id,
+    title,
     unit,
     planned_total,
     planned_unit,
@@ -541,6 +561,8 @@ VALUES
     @search_mode,
     @total,
     @unit_id,
+    @subunit_id,
+    @title,
     @unit,
     @planned_total,
     @planned_unit,
@@ -562,6 +584,8 @@ VALUES
                 cmd.Parameters["@total"].Precision = 18;
                 cmd.Parameters["@total"].Scale = 3;
                 cmd.Parameters.Add("@unit_id", SqlDbType.Int).Value = term.UnitId;
+                cmd.Parameters.Add("@subunit_id", SqlDbType.Int).Value = (object)term.SubunitId ?? DBNull.Value;
+                cmd.Parameters.Add("@title", SqlDbType.NVarChar, 200).Value = (object)term.Title ?? DBNull.Value;
                 cmd.Parameters.Add("@unit", SqlDbType.NVarChar, 10).Value = (object)summary.Unit ?? DBNull.Value;
 
                 cmd.Parameters.Add("@planned_total", SqlDbType.Decimal).Value = summary.PlannedTotal;
@@ -631,20 +655,22 @@ VALUES
                 SearchMode = rdr.IsDBNull(6) ? null : rdr.GetString(6),
                 Total = rdr.GetDecimal(7),
                 UnitId = rdr.GetInt32(8),
-                Unit = rdr.IsDBNull(9) ? null : rdr.GetString(9),
-                PlannedTotal = rdr.GetDecimal(10),
-                PlannedUnit = rdr.IsDBNull(11) ? null : rdr.GetString(11),
-                DeliveredTotal = rdr.GetDecimal(12),
-                DeliveredUnit = rdr.IsDBNull(13) ? null : rdr.GetString(13),
-                PlannedMinusDeliveredTotal = rdr.GetDecimal(14),
-                PlannedMinusDeliveredUnit = rdr.IsDBNull(15) ? null : rdr.GetString(15),
-                RetrievedAtUtc = rdr.GetDateTime(16),
-                GoalId = rdr.IsDBNull(17) ? (long?)null : rdr.GetInt64(17),
-                GoalValue = rdr.IsDBNull(18) ? (decimal?)null : rdr.GetDecimal(18),
-                GoalValidFrom = rdr.IsDBNull(19) ? (DateTime?)null : rdr.GetDateTime(19),
-                GoalValidTo = rdr.IsDBNull(20) ? (DateTime?)null : rdr.GetDateTime(20),
-                GoalCreatedAt = rdr.IsDBNull(21) ? (DateTime?)null : rdr.GetDateTime(21),
-                GoalUpdatedAt = rdr.IsDBNull(22) ? (DateTime?)null : rdr.GetDateTime(22)
+                SubunitId = rdr.IsDBNull(9) ? (int?)null : rdr.GetInt32(9),
+                Title = rdr.IsDBNull(10) ? null : rdr.GetString(10),
+                Unit = rdr.IsDBNull(11) ? null : rdr.GetString(11),
+                PlannedTotal = rdr.GetDecimal(12),
+                PlannedUnit = rdr.IsDBNull(13) ? null : rdr.GetString(13),
+                DeliveredTotal = rdr.GetDecimal(14),
+                DeliveredUnit = rdr.IsDBNull(15) ? null : rdr.GetString(15),
+                PlannedMinusDeliveredTotal = rdr.GetDecimal(16),
+                PlannedMinusDeliveredUnit = rdr.IsDBNull(17) ? null : rdr.GetString(17),
+                RetrievedAtUtc = rdr.GetDateTime(18),
+                GoalId = rdr.IsDBNull(19) ? (long?)null : rdr.GetInt64(19),
+                GoalValue = rdr.IsDBNull(20) ? (decimal?)null : rdr.GetDecimal(20),
+                GoalValidFrom = rdr.IsDBNull(21) ? (DateTime?)null : rdr.GetDateTime(21),
+                GoalValidTo = rdr.IsDBNull(22) ? (DateTime?)null : rdr.GetDateTime(22),
+                GoalCreatedAt = rdr.IsDBNull(23) ? (DateTime?)null : rdr.GetDateTime(23),
+                GoalUpdatedAt = rdr.IsDBNull(24) ? (DateTime?)null : rdr.GetDateTime(24)
             };
         }
 
