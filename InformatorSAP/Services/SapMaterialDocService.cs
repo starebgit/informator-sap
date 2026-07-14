@@ -241,6 +241,21 @@ namespace InformatorSAP.Services
         private static readonly HashSet<string> IzmetLgort = new HashSet<string>(StringComparer.Ordinal) { "0013", "0016" };
         private static readonly HashSet<string> IzmetUnits = new HashSet<string>(StringComparer.Ordinal) { "KOS", "KG" };
 
+        // ---- Termostat / "Montaža 55.17" Izmet/SO, from "Termostat.xlsx" == "Termostatskupaj.xlsx" ----
+        // Both workbooks are the same ZPP_0117 export (plant 1061, company 1060, year 2026,
+        // profit center 11032005; Datum knjiženja 21.-28.06.2026) carrying two pivots that
+        // both sum the signed MSEG-DMBTR ("Vsota od Znes.v dom.val."), with NO LGORT filter:
+        //   Izmet (scrap):  BWART 551, BKLAS in {3100,4100}, restricted to the termostat
+        //                   assembly materials (the pivot's row filter = EGO TERMOSTAT +
+        //                   the two PODNOZJE assemblies; see IsTermostatScrapMaterial).
+        //   SO / Donos:     BWART in {101,102}, BKLAS 4100, ALL materials.
+        // Verified against the workbook's own Data tab (== the SAP source): for the export
+        // scope above, Izmet = -1192.73 EUR (-1440), SO = 183733.26 EUR (90362.6).
+        private const string TermSoBklas = "4100";
+        private static readonly HashSet<string> TermSoBwart = new HashSet<string>(StringComparer.Ordinal) { "101", "102" };
+        private const string TermIzmetBwart = "551";
+        private static readonly HashSet<string> TermIzmetBklas = new HashSet<string>(StringComparer.Ordinal) { "3100", "4100" };
+
         public IzmetRatioResult GetIzmetRatio(IzmetRatioQuery q)
         {
             if (q == null) throw new ArgumentException("Query is required.");
@@ -330,6 +345,137 @@ namespace InformatorSAP.Services
                 decimal amount = ParseScaled(Get(r, 6), 2) * sign;
 
                 var day = Get(r, 7);
+                if (!byDay.TryGetValue(day, out var acc)) { acc = new decimal[2]; byDay[day] = acc; }
+                if (isSo) { acc[0] += amount; soTotal += amount; }
+                else { acc[1] += amount; izmetTotal += amount; }
+            }
+
+            var days = byDay
+                .OrderBy(kv => kv.Key, StringComparer.Ordinal)
+                .Select(kv => new IzmetDayRowDto
+                {
+                    PostingDate = FormatDate(kv.Key),
+                    ShopOutput = kv.Value[0],
+                    Izmet = kv.Value[1],
+                    Ratio = kv.Value[0] == 0m ? 0m : kv.Value[1] / kv.Value[0],
+                    RatioPercent = kv.Value[0] == 0m ? 0m : kv.Value[1] / kv.Value[0] * 100m
+                })
+                .ToList();
+
+            return new IzmetRatioResult
+            {
+                ShopOutputTotal = soTotal,
+                IzmetTotal = izmetTotal,
+                Ratio = soTotal == 0m ? 0m : izmetTotal / soTotal,
+                RatioPercent = soTotal == 0m ? 0m : izmetTotal / soTotal * 100m,
+                Days = days
+            };
+        }
+
+        // The Izmet pivot's material row filter selected exactly {EGO TERMOSTAT, PODNOZJE,
+        // PODNOZJE SESTAV}. Matched here on the (SL) short text; kept ASCII so the source
+        // carries no code-page-sensitive literals -- "PODNO" uniquely identifies the two
+        // PODNOZJE assemblies, and "EGO TERMOSTAT" the finished thermostats.
+        private static bool IsTermostatScrapMaterial(string maktx)
+        {
+            if (string.IsNullOrEmpty(maktx)) return false;
+            return maktx == "EGO TERMOSTAT" || maktx.StartsWith("PODNO", StringComparison.Ordinal);
+        }
+
+        /// <summary>
+        /// Termostat ("Montaza 55.17") Izmet vs SO report, per posting day, replicating the
+        /// two pivots in "Termostat.xlsx"/"Termostatskupaj.xlsx". Feeds both new graphs:
+        /// "Izmet 55.17 vrednostno" uses <see cref="IzmetDayRowDto.Izmet"/> (scrap EUR) and
+        /// "Izmet Termostat / SO EUR" uses the ratio. Classification is fixed (see the
+        /// Term* constants); scope (year, plant, company, posting-date range, profit center)
+        /// comes from the query, exactly like <see cref="GetIzmetRatio"/>.
+        /// </summary>
+        public IzmetRatioResult GetTermostatIzmetRatio(IzmetRatioQuery q)
+        {
+            if (q == null) throw new ArgumentException("Query is required.");
+            if (string.IsNullOrWhiteSpace(q.Mjahr)) throw new ArgumentException("mjahr is required.");
+
+            string werks = (string.IsNullOrWhiteSpace(q.Werks) ? "1061" : q.Werks).Trim();
+            string bukrs = string.IsNullOrWhiteSpace(q.Bukrs) ? "1060" : q.Bukrs.Trim();
+            string spras = ResolveSpras(q.Lang);
+
+            string budatFrom = q.BudatFrom;
+            string budatTo = q.BudatTo;
+            if (string.IsNullOrWhiteSpace(budatFrom) && string.IsNullOrWhiteSpace(budatTo))
+            {
+                budatFrom = DateTime.Today.ToString("yyyyMMdd");
+                budatTo = budatFrom;
+            }
+
+            // Union of both pivots' movement types (no LGORT restriction). BKLAS (MBEW) and
+            // the profit center (MARC) are applied after the master-data lookups.
+            var where = new List<string> { "WERKS = '" + Esc(werks) + "'" };
+            AddIn(where, "MJAHR", q.Mjahr, 0);
+            AddIn(where, "BUKRS", bukrs, 0);
+            AddIn(where, "BWART", "101,102,551", 0);
+            AddDateRange(where, "BUDAT_MKPF", budatFrom, budatTo);
+
+            var msegRows = ReadTable(
+                "MSEG",
+                new[] { "MATNR", "BWART", "SHKZG", "BWTAR", "DMBTR", "BUDAT_MKPF" },
+                BuildWhereOptions(string.Join(" AND ", where)),
+                MaxSapRows);
+
+            if (msegRows.Count >= MaxSapRows)
+                throw new MaterialDocTooLargeException(
+                    $"Query matched the SAP read ceiling of {MaxSapRows:n0} rows. Narrow the posting-date range.");
+
+            if (msegRows.Count == 0)
+                return new IzmetRatioResult { Days = new List<IzmetDayRowDto>() };
+
+            var materials = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var r in msegRows)
+            {
+                var matnr = Get(r, 0).PadLeft(18, '0');
+                if (matnr.Trim('0').Length > 0) materials.Add(matnr);
+            }
+
+            // Same INNER JOIN semantics as ZPP_0117 (the Excel source): drop rows whose
+            // material is missing from MBEW / MARC / MARA. MAKT gives the short text the
+            // Izmet material filter keys off.
+            var mbew = LookupMbew(materials, werks);
+            var marc = LookupMarc(materials, werks);
+            var mara = LookupMara(materials);
+            var makt = LookupMakt(materials, spras);
+
+            var prctrFilter = ToSet(q.Prctr, 10);
+
+            // day (yyyymmdd) -> (so, izmet)
+            var byDay = new Dictionary<string, decimal[]>(StringComparer.Ordinal);
+            decimal soTotal = 0m, izmetTotal = 0m;
+
+            foreach (var r in msegRows)
+            {
+                var matnr18 = Get(r, 0).PadLeft(18, '0');
+                var bwtar = Get(r, 3);
+
+                MbewInfo mb;
+                if (!mbew.TryGetValue(matnr18 + "|" + bwtar, out mb)) continue;
+                MarcInfo mc;
+                if (!marc.TryGetValue(matnr18, out mc)) continue;
+                if (!mara.Contains(matnr18)) continue;
+                if (prctrFilter != null && !prctrFilter.Contains((mc.Prctr ?? "").PadLeft(10, '0'))) continue;
+
+                var bwart = Get(r, 1);
+
+                bool isSo = mb.Bklas == TermSoBklas && TermSoBwart.Contains(bwart);
+                bool isIzmet = false;
+                if (bwart == TermIzmetBwart && TermIzmetBklas.Contains(mb.Bklas))
+                {
+                    makt.TryGetValue(matnr18, out var maktx);
+                    isIzmet = IsTermostatScrapMaterial(maktx);
+                }
+                if (!isSo && !isIzmet) continue;
+
+                decimal sign = Get(r, 2) == "H" ? -1m : 1m;
+                decimal amount = ParseScaled(Get(r, 4), 2) * sign;
+
+                var day = Get(r, 5);
                 if (!byDay.TryGetValue(day, out var acc)) { acc = new decimal[2]; byDay[day] = acc; }
                 if (isSo) { acc[0] += amount; soTotal += amount; }
                 else { acc[1] += amount; izmetTotal += amount; }

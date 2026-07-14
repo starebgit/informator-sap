@@ -126,5 +126,58 @@ namespace InformatorSAP.Controllers
                 return InternalServerError(ex);
             }
         }
+
+        /// <summary>
+        /// Termostat ("Montaža 55.17") Izmet vs SO report, replicating the two pivots in
+        /// "Termostat.xlsx" / "Termostatskupaj.xlsx" per posting day. Feeds both new graphs:
+        /// "Izmet 55.17 vrednostno" (scrap €) and "Izmet Termostat / SO €" (ratio). Izmet is
+        /// scoped to the termostat assembly materials; SO (Donos) is all materials. See
+        /// <see cref="SapMaterialDocService.GetTermostatIzmetRatio"/>. The Excel export used
+        /// mjahr=2026, budat 2026-06-21..28, prctr=11032005.
+        /// </summary>
+        [HttpGet]
+        [Route("izmet-termostat")]
+        public IHttpActionResult GetIzmetTermostat(
+            [FromUri] string mjahr = null,
+            [FromUri] string werks = "1061",
+            [FromUri] string bukrs = "1060",
+            [FromUri] string budatFrom = null,
+            [FromUri] string budatTo = null,
+            [FromUri] string prctr = null,
+            [FromUri] string lang = "SL")
+        {
+            if (string.IsNullOrWhiteSpace(mjahr))
+                return BadRequest("Query parameter 'mjahr' is required (material document year).");
+
+            var query = new IzmetRatioQuery
+            {
+                Mjahr = mjahr,
+                Werks = werks,
+                Bukrs = bukrs,
+                BudatFrom = budatFrom,
+                BudatTo = budatTo,
+                Prctr = prctr,
+                Lang = lang
+            };
+
+            try
+            {
+                var service = new SapMaterialDocService();
+                var result = service.GetTermostatIzmetRatio(query);
+                return Ok(result);
+            }
+            catch (MaterialDocTooLargeException ex)
+            {
+                return BadRequest(ex.Message);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(ex.Message);
+            }
+            catch (Exception ex)
+            {
+                return InternalServerError(ex);
+            }
+        }
     }
 }
