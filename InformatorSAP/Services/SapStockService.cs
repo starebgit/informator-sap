@@ -207,8 +207,21 @@ namespace InformatorSAP.Services
                 return exactSet;
             }
 
-            var up = query.ToUpperInvariant();
-            var lo = query.ToLowerInvariant();
+            // A filter may be written the way the business sheet writes it, with each
+            // fragment wrapped in wildcards: "*protektor* *sestav*" means the short text
+            // must contain BOTH "protektor" and "sestav", in any order and with anything
+            // in between ("PROTEKTOR 145 SESTAV"). A filter without '*' stays a single
+            // substring and behaves exactly as before.
+            var terms = ParseContainsTerms(query);
+            if (terms.Count == 0)
+                return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            // SAP prefilters on one fragment only - the longest, as the most selective -
+            // and the AND across all fragments is applied below on the returned rows.
+            // Keeping a single OR-group avoids nested parentheses in the dynamic WHERE.
+            var probe = terms.OrderByDescending(t => t.Length).First();
+            var up = probe.ToUpperInvariant();
+            var lo = probe.ToLowerInvariant();
 
             var rows = ReadTable(
                 "MAKT",
@@ -216,7 +229,10 @@ namespace InformatorSAP.Services
                 new[]
                 {
                     "MAKTX LIKE '%" + EscapeForLike(up) + "%'",
-                    "OR MAKTX LIKE '%" + EscapeForLike(lo) + "%'"
+                    "OR MAKTX LIKE '%" + EscapeForLike(lo) + "%'",
+                    // SAP LIKE is case sensitive, so a mixed-case short text such as
+                    // "EGO Plosca samot 180" matches neither the upper nor the lower variant.
+                    "OR MAKTX LIKE '%" + EscapeForLike(probe) + "%'"
                 });
 
             var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -228,11 +244,31 @@ namespace InformatorSAP.Services
                 if (string.IsNullOrWhiteSpace(matnr) || string.IsNullOrWhiteSpace(shortText))
                     continue;
 
-                if (shortText.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0)
+                if (terms.All(t => shortText.IndexOf(t, StringComparison.OrdinalIgnoreCase) >= 0))
                     set.Add(matnr);
             }
 
             return set;
+        }
+
+        /// <summary>
+        /// Splits a configured "contains" filter into the fragments a material short text
+        /// must all contain. "*protektor* *sestav*" yields two fragments (AND); a plain
+        /// "plosca samot" yields one, so existing single-substring filters are unchanged.
+        /// </summary>
+        internal static List<string> ParseContainsTerms(string query)
+        {
+            if (string.IsNullOrWhiteSpace(query))
+                return new List<string>();
+
+            if (query.IndexOf('*') < 0)
+                return new List<string> { query.Trim() };
+
+            return query
+                .Split('*')
+                .Select(part => part.Trim())
+                .Where(part => part.Length > 0)
+                .ToList();
         }
 
         private string ResolveBaseUnit(HashSet<string> materialNumbers)
