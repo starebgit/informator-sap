@@ -28,6 +28,12 @@ DECLARE @spec TABLE
 );
 
 -- subunit_id: 5 = montaza, 6 = keramika, 13 = protektor
+--
+-- contains_text syntax:
+--   "plosca samot"          -> short text must contain this one substring
+--   "*protektor* *sestav*"  -> short text must contain BOTH fragments, any order
+--                              (matches "PROTEKTOR 145 SESTAV")
+-- Casing must match MAKTX: SAP LIKE is case sensitive.
 INSERT INTO @spec (title, subunit_id, lgort, contains_text, exact_text) VALUES
     (N'Sestavljanje sponk',            5,  '0012', N'sponka sestav',        NULL),
     (N'Izdelava VE',                   5,  '0012', N'element vezni',        NULL),
