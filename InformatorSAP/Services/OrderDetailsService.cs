@@ -169,8 +169,24 @@ namespace InformatorSAP.Services
                     }
 
                     var compMat18 = crow.GetString("MATERIAL");
-                    if (string.IsNullOrWhiteSpace(compMat18))
+                    var itemCategory = (crow.GetString("ITEM_CATEGORY") ?? string.Empty).Trim();
+
+                    // Text items (item category "T", e.g. "brez obroca") carry no material
+                    // number - they exist only to print a note on the kosovnica. SR855119.
+                    var isTextItem = string.Equals(itemCategory, "T", StringComparison.OrdinalIgnoreCase);
+
+                    if (!isTextItem && string.IsNullOrWhiteSpace(compMat18))
                         continue;
+
+                    if (isTextItem)
+                    {
+                        var textLine = crow.GetString("MATERIAL_DESCRIPTION")?.Trim();
+                        if (string.IsNullOrWhiteSpace(textLine))
+                            continue;
+
+                        dto.Parts.Add(new PartDto { Name = textLine });
+                        continue;
+                    }
 
                     var compKey = compMat18.Trim().PadLeft(18, '0');
 
