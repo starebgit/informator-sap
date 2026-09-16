@@ -117,7 +117,13 @@ namespace InformatorSAP.Services
         planned_minus_delivered_unit,
         retrieved_at_utc,
         ROW_NUMBER() OVER (PARTITION BY term_id ORDER BY retrieved_at_utc DESC, snapshot_id DESC) AS rn
-    FROM informator.dbo.stock_summary_snapshot
+    FROM informator.dbo.stock_summary_snapshot AS s
+    WHERE EXISTS (
+        SELECT 1
+        FROM informator.dbo.stock_term AS t
+        WHERE t.term_id = s.term_id
+          AND t.is_active = 1
+    )
 )
 SELECT
     latest.snapshot_id,
@@ -222,7 +228,13 @@ ORDER BY unit_id, [query];";
         planned_minus_delivered_unit,
         retrieved_at_utc,
         ROW_NUMBER() OVER (PARTITION BY term_id ORDER BY retrieved_at_utc DESC, snapshot_id DESC) AS rn
-    FROM informator.dbo.stock_summary_snapshot
+    FROM informator.dbo.stock_summary_snapshot AS s
+    WHERE EXISTS (
+        SELECT 1
+        FROM informator.dbo.stock_term AS t
+        WHERE t.term_id = s.term_id
+          AND t.is_active = 1
+    )
 )
 SELECT
     latest.snapshot_id,
