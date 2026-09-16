@@ -216,7 +216,10 @@ namespace InformatorSAP.Services
                 new[]
                 {
                     "MAKTX LIKE '%" + EscapeForLike(up) + "%'",
-                    "OR MAKTX LIKE '%" + EscapeForLike(lo) + "%'"
+                    "OR MAKTX LIKE '%" + EscapeForLike(lo) + "%'",
+                    // SAP LIKE is case sensitive, so a mixed-case short text such as
+                    // "EGO Plosca samot 180" matches neither the upper nor the lower variant.
+                    "OR MAKTX LIKE '%" + EscapeForLike(query) + "%'"
                 });
 
             var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
