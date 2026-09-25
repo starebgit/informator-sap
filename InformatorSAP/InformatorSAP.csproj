@@ -185,6 +185,7 @@
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Services\OprStrojService.cs" />
     <Compile Include="Services\OrderDetailsService.cs" />
+    <Compile Include="Services\RfcWhere.cs" />
     <Compile Include="Services\SapGraphGoalService.cs" />
     <Compile Include="Services\SapMaterialDocService.cs" />
     <Compile Include="Services\SapService.cs" />
