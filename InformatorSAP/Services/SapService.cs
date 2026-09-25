@@ -554,14 +554,9 @@ namespace InformatorSAP.Services
                 {
                     foreach (var raw in whereLines)
                     {
-                        if (string.IsNullOrWhiteSpace(raw)) continue;
-                        var line = raw.StartsWith(" ") ? raw : " " + raw;
-                        int i = 0;
-                        while (i < line.Length)
+                        foreach (var part in RfcWhere.Split(raw))
                         {
-                            var part = line.Substring(i, Math.Min(72, line.Length - i));
                             opts.Append(); opts.SetValue("TEXT", part);
-                            i += part.Length;
                         }
                     }
                 }
@@ -757,14 +752,9 @@ namespace InformatorSAP.Services
                 if (rowCount > 0) f.SetValue("ROWCOUNT", rowCount);
                 fields?.Invoke(f.GetTable("FIELDS"));
                 var opts = f.GetTable("OPTIONS");
-                if (!string.IsNullOrWhiteSpace(where))
+                foreach (var part in RfcWhere.Split(where))
                 {
-                    var line = where.StartsWith(" ") ? where : " " + where;
-                    for (int i = 0; i < line.Length; i += 72)
-                    {
-                        var part = line.Substring(i, Math.Min(72, line.Length - i));
-                        opts.Append(); opts.SetValue("TEXT", part);
-                    }
+                    opts.Append(); opts.SetValue("TEXT", part);
                 }
                 try { f.Invoke(dest); } catch { return null; }
                 return f.GetTable("DATA");
@@ -930,11 +920,8 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
         }
         void AppendWhere(IRfcTable opts, string where)
         {
-            if (string.IsNullOrWhiteSpace(where)) return;
-            var line = where.StartsWith(" ") ? where : " " + where;
-            for (int i = 0; i < line.Length; i += 72)
+            foreach (var part in RfcWhere.Split(where))
             {
-                var part = line.Substring(i, Math.Min(72, line.Length - i));
                 opts.Append(); opts.SetValue("TEXT", part);
             }
         }
@@ -1469,11 +1456,8 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
             }
             void AppendWhere(IRfcTable opts, string where)
             {
-                if (string.IsNullOrWhiteSpace(where)) return;
-                var line = where.StartsWith(" ") ? where : " " + where;
-                for (int i = 0; i < line.Length; i += 72)
+                foreach (var part in RfcWhere.Split(where))
                 {
-                    var part = line.Substring(i, Math.Min(72, line.Length - i));
                     opts.Append(); opts.SetValue("TEXT", part);
                 }
             }
@@ -1633,14 +1617,9 @@ public List<CooisOrderRowDto> GetOrdersByWorkCenter(
                 foreach (var fn in fields) { tf.Append(); tf.SetValue("FIELDNAME", fn); }
 
                 var opts = f.GetTable("OPTIONS");
-                if (!string.IsNullOrWhiteSpace(where))
+                foreach (var part in RfcWhere.Split(where))
                 {
-                    var line = where.StartsWith(" ") ? where : " " + where;
-                    for (int i = 0; i < line.Length; i += 72)
-                    {
-                        var part = line.Substring(i, Math.Min(72, line.Length - i));
-                        opts.Append(); opts.SetValue("TEXT", part);
-                    }
+                    opts.Append(); opts.SetValue("TEXT", part);
                 }
                 try { f.Invoke(dest); } catch { return null; }
                 return f.GetTable("DATA");

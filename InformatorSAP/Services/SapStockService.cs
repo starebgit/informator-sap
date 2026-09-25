@@ -624,15 +624,7 @@ namespace InformatorSAP.Services
 
         private static string[] BuildWhereOptions(string where)
         {
-            if (string.IsNullOrWhiteSpace(where)) return new string[0];
-
-            var parts = new List<string>();
-            var line = where.StartsWith(" ") ? where : " " + where;
-            for (int i = 0; i < line.Length; i += 72)
-            {
-                parts.Add(line.Substring(i, Math.Min(72, line.Length - i)));
-            }
-            return parts.ToArray();
+            return RfcWhere.Split(where).ToArray();
         }
 
         private static bool TryGetCachedObjnrReleased(string objnr, out bool isReleased)
